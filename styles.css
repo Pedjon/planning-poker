@@ -21,6 +21,12 @@ html, body {
   margin: 0;
   padding: 0;
   min-height: 100%;
+  /* Stop mobile browsers from auto-inflating font sizes, a common reason the
+     real phone wraps text differently than Chrome's device emulator. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* The deck manages its own horizontal scroll; the page itself should not. */
+  overflow-x: hidden;
 }
 
 body {
@@ -269,11 +275,13 @@ body {
   .role-buttons { flex-direction: column; }
   .role-buttons .btn { width: 100%; }
 
-  /* Stack the table header above its action buttons */
+  /* Stack the table header above its action buttons. The action bar lays out
+     deterministically (pill on its own row, each button full width) so it looks
+     identical across phone widths instead of reflowing differently per device. */
   .table-head { flex-direction: column; align-items: stretch; }
   .table-actions { width: 100%; }
-  .table-actions .btn { flex: 1 1 auto; }
-  .table-actions .pill { flex: 0 0 auto; }
+  .table-actions .pill { flex: 1 1 100%; text-align: center; }
+  .table-actions .btn { flex: 1 1 100%; }
 
   .result-bar { flex-wrap: wrap; gap: 12px 24px; }
 
