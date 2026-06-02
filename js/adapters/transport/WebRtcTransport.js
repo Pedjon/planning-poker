@@ -1,128 +1,250 @@
 // Driven adapter: Transport port over raw WebRTC data channels.
-// Topology: star. The host accepts one offer per joiner and relays messages.
+//
+// Topology: full mesh. The very first link between two peers is still set up
+// with a manual copy-paste offer/answer (the only step a human performs).
+// After that, every other link is negotiated automatically with in-band
+// signaling: SDP offers/answers travel as 'signal' frames flooded across the
+// channels that already exist, so a peer can reach someone it is not yet
+// directly connected to. Once the direct link is up, traffic flows point to
+// point.
+//
+// Frame envelope (every byte on a channel is one of these):
+//   { mid, from, to, kind, body }
+//     mid  - unique id, used to dedupe floods and stop loops
+//     from - id of the original sender (survives relays)
+//     to   - target peer id, or null for "everyone" (broadcast)
+//     kind - 'signal' (consumed here) or 'app' (handed to the controller)
+//     body - the signal payload or the application message
 import { ICE_CONFIG } from './iceConfig.js';
 import { encode, decode, waitForIce } from './signaling.js';
 import { diagnose } from './diagnostics.js';
+import { SignalTypes } from '../../domain/messages.js';
 import { log, warn } from '../../infra/logger.js';
 
-function wireChannel(channel, meta, handlers, label) {
-  log(label, 'data channel created, readyState=' + channel.readyState);
-  channel.onopen = () => {
-    log(label, 'data channel OPEN');
-    if (handlers.onOpen) handlers.onOpen(meta);
-  };
-  channel.onclose = () => {
-    log(label, 'data channel CLOSE');
-    if (handlers.onClose) handlers.onClose(meta);
-  };
-  channel.onerror = (e) => {
-    warn(label, 'data channel ERROR', e && e.error ? e.error : e);
-  };
-  channel.onmessage = (e) => {
-    let msg;
-    try { msg = JSON.parse(e.data); } catch (err) { return; }
-    log(label, 'recv', msg);
-    if (handlers.onMessage) handlers.onMessage(msg, meta);
-  };
+let MID_SEQ = 0;
+function nextMid(selfId) {
+  return selfId + ':' + (++MID_SEQ) + ':' + Date.now().toString(36);
 }
 
 export class WebRtcTransport {
-  // Host: accepts one offer per joiner, relays to all open channels.
-  initHost(handlers) {
-    const peers = [];
-    let seq = 0;
+  // Spin up the mesh for this peer. `handlers`:
+  //   onMessage(appMsg, fromId) - an application frame arrived
+  //   onPeerOpen(peerId)        - a direct data channel opened
+  //   onPeerClose(peerId)       - a direct link failed/closed
+  init({ selfId, handlers }) {
+    const links = new Map();   // peerId -> { pc, channel }
+    const dialing = new Set(); // peerIds we've already started offering to
+    const seenOrder = [];      // ring buffer of recent mids
+    const seen = new Set();
+    let pending = null;        // { pc, channel } for a manual offer awaiting its answer
 
-    function acceptJoinRequest(code) {
-      const offer = decode(code);
-      const pc = new RTCPeerConnection(ICE_CONFIG);
-      const label = 'HOST<-peer#' + (seq + 1);
-      const meta = { id: ++seq, channel: null, pc };
-      log(label, 'created peer connection; remote offer type=' + offer.type);
-      diagnose(pc, label);
-
-      pc.ondatachannel = (e) => {
-        log(label, 'ondatachannel');
-        meta.channel = e.channel;
-        wireChannel(e.channel, meta, handlers, label);
-      };
-      pc.onconnectionstatechange = () => {
-        if ((pc.connectionState === 'failed' || pc.connectionState === 'closed') && handlers.onClose) {
-          handlers.onClose(meta);
-        }
-      };
-
-      peers.push(meta);
-
-      return pc.setRemoteDescription(offer)
-        .then(() => { log(label, 'remote offer set; creating answer'); return pc.createAnswer(); })
-        .then((answer) => pc.setLocalDescription(answer))
-        .then(() => { log(label, 'local answer set; gathering ICE...'); return waitForIce(pc); })
-        .then(() => { log(label, 'answer code ready'); return encode(pc.localDescription); });
+    function markSeen(mid) {
+      if (seen.has(mid)) return false;
+      seen.add(mid);
+      seenOrder.push(mid);
+      if (seenOrder.length > 500) seen.delete(seenOrder.shift());
+      return true;
     }
 
-    function broadcast(msg) {
-      const data = JSON.stringify(msg);
-      peers.forEach((m) => {
-        if (m.channel && m.channel.readyState === 'open') {
-          try { m.channel.send(data); } catch (e) { /* ignore */ }
+    function flood(frame, exceptId) {
+      const data = JSON.stringify(frame);
+      links.forEach((lk, id) => {
+        if (id === exceptId) return;
+        if (lk.channel && lk.channel.readyState === 'open') {
+          try { lk.channel.send(data); } catch (e) { /* ignore */ }
         }
       });
     }
 
-    return { role: 'host', acceptJoinRequest, broadcast };
-  }
+    // Originate a frame from this peer: remember it (so loopbacks dedupe) and
+    // push it out to every open channel.
+    function emit(frame) {
+      markSeen(frame.mid);
+      flood(frame, null);
+    }
 
-  // Joiner: creates the offer, applies the host's answer, sends over one channel.
-  initJoin(handlers) {
-    const label = 'JOIN->host';
-    const pc = new RTCPeerConnection(ICE_CONFIG);
-    const meta = { id: 'host', channel: null, pc };
-    log(label, 'created peer connection');
-    diagnose(pc, label);
-    const channel = pc.createDataChannel('poker');
-    meta.channel = channel;
-    wireChannel(channel, meta, handlers, label);
+    function removeLink(peerId) {
+      const lk = links.get(peerId);
+      if (!lk) return;
+      links.delete(peerId);
+      dialing.delete(peerId);
+      try { lk.pc.close(); } catch (e) { /* ignore */ }
+      if (handlers.onPeerClose) handlers.onPeerClose(peerId);
+    }
 
-    pc.onconnectionstatechange = () => {
-      if ((pc.connectionState === 'failed' || pc.connectionState === 'closed') && handlers.onClose) {
-        handlers.onClose(meta);
+    function newPc(peerId, label) {
+      const pc = new RTCPeerConnection(ICE_CONFIG);
+      diagnose(pc, label);
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+          removeLink(peerId);
+        }
+      };
+      return pc;
+    }
+
+    function wireChannel(channel, getPeerId, label) {
+      channel.onopen = () => {
+        log(label, 'channel OPEN <-> ' + getPeerId());
+        if (handlers.onPeerOpen) handlers.onPeerOpen(getPeerId());
+      };
+      channel.onclose = () => {
+        log(label, 'channel CLOSE <-> ' + getPeerId());
+        removeLink(getPeerId());
+      };
+      channel.onerror = (e) => warn(label, 'channel ERROR', e && e.error ? e.error : e);
+      channel.onmessage = (e) => {
+        let frame;
+        try { frame = JSON.parse(e.data); } catch (err) { return; }
+        onFrame(frame, getPeerId());
+      };
+    }
+
+    function onFrame(frame, sourceId) {
+      if (!frame || !frame.mid) return;
+      if (!markSeen(frame.mid)) return; // already handled this one
+      const broadcast = frame.to == null;
+      const toMe = frame.to === selfId;
+      if (!broadcast && !toMe) {
+        flood(frame, sourceId); // not for me: relay onward
+        return;
       }
-    };
+      if (broadcast) flood(frame, sourceId); // keep the flood going, then also consume
+      consume(frame);
+    }
 
-    function createRequest() {
+    function consume(frame) {
+      if (frame.kind === 'signal') return onSignal(frame.from, frame.body);
+      if (frame.kind === 'app' && handlers.onMessage) handlers.onMessage(frame.body, frame.from);
+    }
+
+    // ----------------------------- in-band signaling -----------------------------
+    function relaySignal(to, body) {
+      emit({ mid: nextMid(selfId), from: selfId, to, kind: 'signal', body });
+    }
+
+    function onSignal(from, body) {
+      if (body.type === SignalTypes.offer) {
+        let lk = links.get(from);
+        let pc;
+        if (lk) {
+          pc = lk.pc;
+        } else {
+          const label = 'MESH<-' + from;
+          pc = newPc(from, label);
+          lk = { pc, channel: null };
+          links.set(from, lk);
+          pc.ondatachannel = (e) => {
+            lk.channel = e.channel;
+            wireChannel(e.channel, () => from, label);
+          };
+        }
+        pc.setRemoteDescription(body.desc)
+          .then(() => pc.createAnswer())
+          .then((answer) => pc.setLocalDescription(answer))
+          .then(() => waitForIce(pc))
+          .then(() => relaySignal(from, { type: SignalTypes.answer, desc: pc.localDescription }))
+          .catch((err) => warn('MESH<-' + from, 'answer failed', err));
+      } else if (body.type === SignalTypes.answer) {
+        const lk = links.get(from);
+        if (!lk || lk.pc.signalingState !== 'have-local-offer') return;
+        lk.pc.setRemoteDescription(body.desc)
+          .catch((err) => warn('MESH->' + from, 'applying answer failed', err));
+      }
+    }
+
+    // Open a direct link to `peerId` if we don't have one. Deterministic dialer
+    // rule avoids offer glare: the peer with the lower id always offers, the
+    // other waits for it.
+    function ensureConnectedTo(peerId) {
+      if (peerId === selfId || links.has(peerId) || dialing.has(peerId)) return;
+      if (!(selfId < peerId)) return; // higher id waits to be dialed
+      dialing.add(peerId);
+      const label = 'MESH->' + peerId;
+      const pc = newPc(peerId, label);
+      const channel = pc.createDataChannel('poker');
+      links.set(peerId, { pc, channel });
+      wireChannel(channel, () => peerId, label);
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() => waitForIce(pc))
+        .then(() => relaySignal(peerId, { type: SignalTypes.offer, desc: pc.localDescription }))
+        .catch((err) => warn(label, 'offer failed', err));
+    }
+
+    // ----------------------------- manual first link -----------------------------
+    function createManualOffer() {
+      const label = 'MANUAL(offer)';
+      const pc = newPc('pending', label);
+      const channel = pc.createDataChannel('poker');
+      pending = { pc, channel };
       log(label, 'creating offer');
       return pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => { log(label, 'local offer set; gathering ICE...'); return waitForIce(pc); })
-        .then(() => { log(label, 'request code ready'); return encode(pc.localDescription); });
+        .then(() => waitForIce(pc))
+        .then(() => encode({ id: selfId, desc: pc.localDescription }));
     }
 
-    function acceptAnswer(code) {
-      // Only valid right after a local offer was created. If we're already in
-      // 'stable' the answer was applied before (e.g. a double click) - no-op.
+    function acceptManualAnswer(code) {
+      if (!pending) return Promise.resolve({ applied: false });
+      const pc = pending.pc;
       if (pc.signalingState !== 'have-local-offer') {
-        log(label, 'acceptAnswer skipped (state=' + pc.signalingState + ')');
         return Promise.resolve({ applied: false, state: pc.signalingState });
       }
-      const answer = decode(code);
-      if (!answer || answer.type !== 'answer') {
+      const env = decode(code);
+      if (!env || !env.desc || env.desc.type !== 'answer') {
         return Promise.reject(new Error('That code is not a response code.'));
       }
-      log(label, 'applying remote answer');
-      return pc.setRemoteDescription(answer).then(() => {
-        log(label, 'remote answer set; signalingState=' + pc.signalingState);
-        return { applied: true, state: pc.signalingState };
-      });
+      const remoteId = env.id;
+      const channel = pending.channel;
+      links.set(remoteId, { pc, channel });
+      pending = null;
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') removeLink(remoteId);
+      };
+      wireChannel(channel, () => remoteId, 'MANUAL<->' + remoteId);
+      log('MANUAL(offer)', 'applying answer from ' + remoteId);
+      return pc.setRemoteDescription(env.desc).then(() => ({ applied: true, id: remoteId }));
     }
 
-    function send(msg) {
-      if (channel.readyState === 'open') {
-        try { channel.send(JSON.stringify(msg)); } catch (e) { /* ignore */ }
-      } else {
-        warn(label, 'send dropped, channel not open (state=' + channel.readyState + ')');
+    function acceptManualOffer(code) {
+      const env = decode(code);
+      if (!env || !env.desc || env.desc.type !== 'offer') {
+        return Promise.reject(new Error('That code is not a request code.'));
       }
+      const remoteId = env.id;
+      const label = 'MANUAL<-' + remoteId;
+      const pc = newPc(remoteId, label);
+      const lk = { pc, channel: null };
+      links.set(remoteId, lk);
+      pc.ondatachannel = (e) => {
+        lk.channel = e.channel;
+        wireChannel(e.channel, () => remoteId, label);
+      };
+      log(label, 'remote offer received; creating answer');
+      return pc.setRemoteDescription(env.desc)
+        .then(() => pc.createAnswer())
+        .then((answer) => pc.setLocalDescription(answer))
+        .then(() => waitForIce(pc))
+        .then(() => encode({ id: selfId, desc: pc.localDescription }));
     }
 
-    return { role: 'join', createRequest, acceptAnswer, send };
+    // ----------------------------- app messaging -----------------------------
+    function broadcast(msg) {
+      emit({ mid: nextMid(selfId), from: selfId, to: null, kind: 'app', body: msg });
+    }
+
+    function sendTo(peerId, msg) {
+      emit({ mid: nextMid(selfId), from: selfId, to: peerId, kind: 'app', body: msg });
+    }
+
+    function peerIds() {
+      return Array.from(links.keys());
+    }
+
+    return {
+      createManualOffer, acceptManualOffer, acceptManualAnswer,
+      ensureConnectedTo, broadcast, sendTo, peerIds
+    };
   }
 }

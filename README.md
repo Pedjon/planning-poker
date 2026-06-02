@@ -42,17 +42,16 @@ See [docs/usage and deployment](docs/deployment.md) for hosting it publicly (Git
 
 ## How it works (in one paragraph)
 
-Peers form a **star**: one **host** acts as the relay, and each joiner does a one-time manual copy-paste exchange of WebRTC connection codes (offer/answer) with the host. The host owns the authoritative session state in LokiJS; clients send actions (join, vote) to the host, which applies them and broadcasts a full state **snapshot** to everyone. Each peer mirrors that snapshot into its own LokiJS and re-renders. Full details and diagrams in [docs/webrtc.md](docs/webrtc.md).
+Peers form a **full mesh**. Only the **first** link into a session needs a manual copy-paste exchange of WebRTC codes (offer/answer); after that, peers gossip a roster and negotiate every remaining link automatically with in-band signaling. A deterministically-elected **coordinator** (the most senior connected peer) owns the authoritative session state in LokiJS: peers send actions (vote, reveal) to it, and it broadcasts a full state **snapshot** that everyone mirrors and re-renders. Because all links already exist, losing the coordinator is a silent role swap rather than a reconnect. Full details and diagrams in [docs/webrtc.md](docs/webrtc.md).
 
 ```mermaid
 flowchart TB
-  Host(("Host (relay + authoritative LokiJS)"))
-  P1["Peer 1"]
-  P2["Peer 2"]
-  P3["Peer 3"]
-  P1 ---|"RTCDataChannel"| Host
-  P2 ---|"RTCDataChannel"| Host
-  P3 ---|"RTCDataChannel"| Host
+  A(("A (coordinator)"))
+  B["Peer B"]
+  C["Peer C"]
+  A <-->|"manual first link"| B
+  A <-->|"auto, in-band"| C
+  B <-->|"auto, in-band"| C
 ```
 
 ## Project structure
@@ -79,12 +78,14 @@ docs/                       architecture, webrtc, deployment
 - [docs/architecture.md](docs/architecture.md) - the hexagonal layering, ports, and module responsibilities
 - [docs/webrtc.md](docs/webrtc.md) - how WebRTC is used: signaling, ICE/STUN/TURN, data channels, sync, troubleshooting
 - [docs/deployment.md](docs/deployment.md) - running locally, Docker, and GitHub Pages
+- [docs/reconnection-analysis.md](docs/reconnection-analysis.md) - exploratory notes on serverless reconnection / surviving host loss
 
 ## Limitations
 
 - **NAT traversal**: serverless WebRTC can't connect every network pair. Same easy/cone NATs connect via STUN; symmetric NAT / strict firewalls / corporate VPNs need a reachable **TURN** relay (see [docs/webrtc.md](docs/webrtc.md#nat-stun-and-turn)).
-- **Host is the hub**: if the host's tab closes, the session ends (no persistence by design).
-- **Manual signaling**: two copy-pastes per joiner - fine for a team, not for large groups.
+- **Coordinator handoff, not persistence**: if the coordinator's tab closes, the mesh elects the next-most-senior peer and the session continues - but if *everyone* leaves, in-memory state is gone (persistence is a planned follow-up).
+- **Manual signaling for the first link**: the first person to join still does one copy-paste exchange; every link after that is automatic.
+- **Mesh cost**: `O(n^2)` connections - fine for a planning-poker team, not for large groups.
 
 ## License
 

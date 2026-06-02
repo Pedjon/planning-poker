@@ -13,54 +13,93 @@ WebRTC lets two browsers open a direct, encrypted **data channel** (`RTCDataChan
 
 The mechanism for trading these is called **signaling**, and WebRTC deliberately does not define it. Normally you'd run a small signaling server (WebSocket, etc.). To stay fully serverless, this app uses **manual copy-paste signaling**: the offer/answer blobs are shown as text codes that users send to each other (Slack, chat, etc.).
 
-## Topology: a star with the host as relay
+## Topology: a self-healing full mesh
 
-Manual signaling does not scale to a full mesh (a mesh of `n` peers needs `n x (n-1) / 2` copy-paste exchanges). Instead, peers form a **star**:
+Earlier versions used a **star** (everyone connected to one host). That kept manual signaling cheap but made the host a single point of failure: if it dropped, the session fell apart. As of Phase A the app forms a **full mesh** - every peer holds a direct data channel to every other peer - while keeping manual signaling to a single exchange.
 
-- One person is the **host** (the hub).
-- Every other peer (**joiner**) does exactly one offer/answer exchange with the host.
-- The host **relays** application messages between everyone and owns the authoritative state.
+The trick is to only ever do **one** manual copy-paste (the first link into the session). Every link after that is negotiated automatically with **in-band signaling**: the SDP offers/answers travel as ordinary messages over the data channels that already exist.
 
 ```mermaid
 flowchart TB
-  Host(("Host (relay + authoritative state)"))
-  J1["Joiner 1"]
-  J2["Joiner 2"]
-  J3["Joiner 3"]
-  J1 ---|"RTCDataChannel"| Host
-  J2 ---|"RTCDataChannel"| Host
-  J3 ---|"RTCDataChannel"| Host
+  A(("A (coordinator)"))
+  B["B"]
+  C["C"]
+  A <-->|"manual first link"| B
+  A <-->|"auto, in-band"| C
+  B <-->|"auto, in-band"| C
 ```
 
-This keeps manual signaling at one exchange (two codes) per joiner, regardless of how many people join.
+- The **first** person to reach the session does one manual offer/answer exchange with an existing member (exactly the old host/join copy-paste).
+- Once that link is open, peers **gossip** a roster (`hello` / `roster` messages) so everyone learns everyone else's id.
+- Each peer then auto-dials the peers it isn't connected to yet, until the mesh is complete.
 
-## The signaling handshake (joiner-initiated)
+### Deterministic coordinator (host election)
 
-The joiner creates the offer; the host answers. A "code" is just the local description, JSON-stringified and base64-encoded - see `encode`/`decode` in [signaling.js](../js/adapters/transport/signaling.js).
+State still needs a single authoritative writer to avoid conflicts, but that role is now **computed**, not fixed:
+
+- The **coordinator** is the most senior connected participant - earliest `joinedAt`, ties broken by id. Because `joinedAt` rides along in the shared snapshot, every peer independently computes the same winner.
+- Only the coordinator applies actions and broadcasts snapshots. Everyone else mirrors snapshots and routes their own actions to the coordinator.
+- When the coordinator drops, the next-most-senior peer is already the new winner of the same calculation, and it already holds the latest snapshot it was mirroring. So host loss is a **silent role swap**, not a reconnection scramble. See `coordinatorId()` / `amCoordinator()` in [SessionController.js](../js/application/SessionController.js).
+
+### Avoiding offer glare
+
+When two peers try to connect to each other, both creating offers at once causes "glare". The mesh avoids it with a deterministic dialer rule in `ensureConnectedTo` ([WebRtcTransport.js](../js/adapters/transport/WebRtcTransport.js)): for any pair, **the peer with the lower id offers; the higher id waits** and answers. No rollback or perfect-negotiation needed.
+
+## The first handshake (manual, joiner-initiated)
+
+The joiner creates the offer; the existing member answers. A "code" is `{ id, desc }` (the peer's id plus its local description), JSON-stringified and base64-encoded - see `encode`/`decode` in [signaling.js](../js/adapters/transport/signaling.js). Embedding the id lets each side learn who it just connected to.
 
 ```mermaid
 sequenceDiagram
   participant J as Joiner
-  participant H as Host
-  J->>J: initJoin() creates RTCPeerConnection + data channel
-  J->>J: createRequest() -> createOffer + setLocalDescription
+  participant H as Existing member
+  J->>J: createManualOffer() -> createOffer + setLocalDescription
   J->>J: wait for ICE gathering to complete
-  J-->>H: request code (offer)  [copy-paste]
-  H->>H: acceptJoinRequest(code) -> setRemoteDescription(offer)
+  J-->>H: request code (offer + id)  [copy-paste]
+  H->>H: acceptManualOffer(code) -> setRemoteDescription(offer)
   H->>H: createAnswer + setLocalDescription
   H->>H: wait for ICE gathering to complete
-  H-->>J: response code (answer)  [copy-paste]
-  J->>J: submitAnswer(code) -> setRemoteDescription(answer)
-  Note over J,H: ICE connectivity checks run -> data channel OPEN
+  H-->>J: response code (answer + id)  [copy-paste]
+  J->>J: acceptManualAnswer(code) -> setRemoteDescription(answer)
+  Note over J,H: data channel OPEN -> hello/roster gossip -> auto-mesh
 ```
+
+## In-band signaling (every link after the first)
+
+New links never need copy-paste. The dialer floods a `signal` frame addressed to its target; intermediate peers relay it until it arrives, then the answer comes back the same way.
+
+```mermaid
+sequenceDiagram
+  participant C as C (lower id, dials)
+  participant A as A (relay)
+  participant X as X (target)
+  C->>C: ensureConnectedTo(X) -> createOffer + waitForIce
+  C-->>A: signal{ to:X, offer }   (flooded)
+  A-->>X: signal{ to:X, offer }   (relayed)
+  X->>X: setRemoteDescription + createAnswer + waitForIce
+  X-->>A: signal{ to:C, answer }  (flooded)
+  A-->>C: signal{ to:C, answer }  (relayed)
+  C->>C: setRemoteDescription(answer)
+  Note over C,X: direct C <-> X data channel OPEN
+```
+
+### Frame envelope and the flood relay
+
+Every byte on a channel is one envelope: `{ mid, from, to, kind, body }`.
+
+- `mid` is a unique id; each peer keeps a bounded set of seen `mid`s and drops duplicates, which stops flood loops.
+- `to` is a target id, or `null` for a broadcast.
+- `kind` is `signal` (consumed inside the transport) or `app` (handed to the controller).
+
+A peer that receives a frame not addressed to it simply re-floods it to its other open channels. With a connected graph this reliably reaches a peer you have no direct link to yet - which is exactly how a brand-new joiner negotiates links to members it has never spoken to. Once the direct channel is up, traffic between them is a single hop.
 
 ### Non-trickle ICE (why we wait)
 
-ICE candidates are normally discovered over time ("trickle"). Since we can only paste **one** code, we wait until ICE gathering is fully complete before producing the code, so every candidate is already embedded in the SDP. That is what `waitForIce(pc)` does in [signaling.js](../js/adapters/transport/signaling.js): it resolves when `iceGatheringState === 'complete'`, or after a safety timeout (`ICE_WAIT_MS`, 6s) so a slow/unreachable TURN server can't block code generation forever.
+ICE candidates are normally discovered over time ("trickle"). Both the manual first link (one pasted code) and the Phase A in-band links wait until ICE gathering is fully complete before producing the SDP, so every candidate is already embedded. That is what `waitForIce(pc)` does in [signaling.js](../js/adapters/transport/signaling.js): it resolves when `iceGatheringState === 'complete'`, or after a safety timeout (`ICE_WAIT_MS`, 6s) so a slow/unreachable TURN server can't block forever. (Sending candidates incrementally - real trickle ICE - is a planned Phase C speed-up; the `SignalTypes.candidate` slot in [messages.js](../js/domain/messages.js) is reserved for it.)
 
 ### Idempotent answer handling
 
-`acceptAnswer` in [WebRtcTransport.js](../js/adapters/transport/WebRtcTransport.js) only applies the answer when the connection is in `have-local-offer`. If it's already `stable` (e.g. the user clicked Connect twice), it no-ops instead of throwing `InvalidStateError: ... Called in wrong state: stable`. It also rejects a pasted code whose `type` is not `answer`.
+`acceptManualAnswer` in [WebRtcTransport.js](../js/adapters/transport/WebRtcTransport.js) only applies the answer when the connection is in `have-local-offer`. If it's already `stable` (e.g. the user clicked Connect twice), it no-ops instead of throwing `InvalidStateError: ... Called in wrong state: stable`. It also rejects a pasted code whose description `type` is not `answer`. The in-band `onSignal` handler applies the same guard before consuming an `answer`.
 
 ## NAT, STUN, and TURN
 
@@ -81,32 +120,32 @@ If gathering ends with `srflx: 0` and `relay: 0`, only local candidates exist an
 
 ## Application protocol over the data channel
 
-Once a channel is open, peers exchange small JSON messages. The shapes are defined once in [messages.js](../js/domain/messages.js):
+Once a channel is open, peers exchange small JSON messages (the `body` of an `app` frame). The shapes are defined once in [messages.js](../js/domain/messages.js):
 
-- Client -> host: `{ kind: 'action', action: { type, ... } }`
-- Host -> all: `{ kind: 'sync', snapshot: { session, participants } }`
+- peer -> coordinator: `{ kind: 'action', action: { type, ... } }` (routed with `sendTo`)
+- coordinator -> all: `{ kind: 'sync', snapshot: { session, participants } }` (broadcast)
+- any -> all: `{ kind: 'hello', id, name }` and `{ kind: 'roster', roster: [{id,name}] }`
 
-Action types: `join`, `vote`, `leave`, `reveal`, `reset`.
+Action types: `join`, `vote`, `leave`, `reveal`, `reset`. A peer announces itself with `hello`; the coordinator turns that into a `join` and re-syncs, so a newcomer never sends its own `join` action.
 
-### Sync model (host is authoritative)
+### Sync model (the coordinator is authoritative)
 
 ```mermaid
 sequenceDiagram
-  participant C as Client
-  participant H as Host
-  participant S as Host LokiJS
-  C->>H: { kind:'action', action: vote(id, 5) }
-  H->>S: store.applyAction(action)
-  H->>H: exportSnapshot()
-  H-->>C: { kind:'sync', snapshot }
-  H-->>H: (also applies to its own UI)
-  C->>C: store.importSnapshot(snapshot) -> re-render
+  participant P as Peer
+  participant K as Coordinator
+  participant S as Coordinator LokiJS
+  P->>K: { kind:'action', action: vote(id, 5) }
+  K->>S: store.applyAction(action)
+  K->>K: exportSnapshot()
+  K-->>P: { kind:'sync', snapshot }   (broadcast to all)
+  P->>P: store.importSnapshot(snapshot) -> re-render
 ```
 
-- The **host** applies every action to its LokiJS store and broadcasts a full snapshot to all channels (`_syncAll()` in [SessionController.js](../js/application/SessionController.js)).
-- **Clients** never mutate authoritative state; they send actions and render whatever snapshot the host sends back.
-- The host's own actions (its vote, reveal, reset) are applied locally and then broadcast.
-- When a client's channel closes, the host removes that participant (`leave`) and re-syncs.
+- The **coordinator** applies every action to its LokiJS store and broadcasts a full snapshot to all channels (`_syncAll()` in [SessionController.js](../js/application/SessionController.js)).
+- Non-coordinators never mutate authoritative state; they send actions to the coordinator and render whatever snapshot comes back. A fresh joiner is not eligible to be coordinator until it has received its first snapshot (`synced`), which prevents two writers during bootstrap.
+- The coordinator's own actions (its vote, reveal, reset) are applied locally and then broadcast.
+- When a peer's link closes, the most senior survivor removes that participant (`leave`) and re-syncs - and if the peer that left was the coordinator, that survivor is the new coordinator.
 
 Votes stay hidden until reveal because the UI only shows a "voted" checkmark (not the value) while `session.revealed` is false; on reveal it shows values plus the computed average/consensus.
 
@@ -118,7 +157,7 @@ Every peer connection is instrumented by `diagnose(pc, label)` in [diagnostics.j
 - each local ICE candidate and its type, plus a `candidates gathered { host, srflx, relay, ... }` summary
 - ICE candidate errors, data-channel open/close/error, and every message sent/received
 
-Open DevTools (works in incognito too) to follow a connection. Tags: `JOIN->host`, `HOST<-peer#N`, and `APP`. Toggle logging at runtime:
+Open DevTools (works in incognito too) to follow a connection. Tags: `MANUAL(offer)` / `MANUAL<->id` for the first link, `MESH->id` (we dialed) / `MESH<-id` (we answered) for auto links, and `APP` for application events. Toggle logging at runtime:
 
 ```js
 PP.setDebug(false)
@@ -133,7 +172,8 @@ Read the `iceConnectionState` transitions and the `candidates gathered` summary 
   - Only `host` candidates that are mDNS `.local` names, which can't be resolved (e.g. when opened from `file://`, or across a VPN that blocks multicast). Fix: serve over `http://localhost` (or HTTPS), and for same-machine testing you can disable Chrome's mDNS at `chrome://flags/#enable-webrtc-hide-local-ips-with-mdns` so it emits the real LAN IP.
   - Two different public IPs in your `srflx` candidates -> **symmetric NAT / CGNAT / VPN**. Direct P2P is impossible; you need TURN.
   - TURN attempts time out (`TURN allocate request timed out` / `Failed to establish connection`) -> the network blocks the relay. Use a TURN host the network permits, or test off the VPN.
-- **`InvalidStateError ... wrong state: stable` when connecting**: the answer was applied twice; handled by the idempotent `acceptAnswer`, and the UI disables Connect after the first click.
+- **`InvalidStateError ... wrong state: stable` when connecting**: the answer was applied twice; handled by the idempotent `acceptManualAnswer`, and the UI disables Connect after the first click.
+- **A new joiner connects to one member but others don't appear**: the in-band signal flood needs a connected graph. Check the logs for `MESH->`/`MESH<-` tags and `signal` frames being relayed; if auto-dials never start, the `hello`/`roster` gossip isn't reaching peers (open DevTools on the member that accepted the manual link).
 
 ### Getting a reliable TURN
 
