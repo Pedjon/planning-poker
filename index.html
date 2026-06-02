@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Planning Poker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="logo">Planning&nbsp;Poker</h1>
+    <div id="connBadge" class="badge badge--idle">Not connected</div>
+  </header>
+
+  <main class="app">
+    <!-- Setup: choose name + role -->
+    <section id="setupView" class="view card">
+      <h2 class="view__title">Join a session</h2>
+      <label class="field">
+        <span class="field__label">Your name</span>
+        <input id="nameInput" class="input" type="text" placeholder="e.g. Pedro" maxlength="24" autocomplete="off" />
+      </label>
+      <div class="role-buttons">
+        <button id="hostBtn" class="btn btn--primary">Host a session</button>
+        <button id="joinBtn" class="btn">Join a session</button>
+      </div>
+      <p class="hint">Hosting? Share the response code with each person who wants to join. Joining? Create a request code and send it to the host.</p>
+    </section>
+
+    <!-- Host signaling: accept join requests, hand back answers -->
+    <section id="hostSignalView" class="view card hidden">
+      <h2 class="view__title">Host: connect a participant</h2>
+      <ol class="steps">
+        <li>Ask the joiner to send you their <strong>request code</strong>.</li>
+        <li>Paste it below and generate a <strong>response code</strong>.</li>
+        <li>Send the response code back to them. Repeat for each participant.</li>
+      </ol>
+      <label class="field">
+        <span class="field__label">Paste join request</span>
+        <textarea id="hostRequestInput" class="textarea" rows="3" placeholder="Paste the joiner's request code here"></textarea>
+      </label>
+      <button id="hostGenerateBtn" class="btn btn--primary">Generate response code</button>
+      <label class="field hidden" id="hostAnswerField">
+        <span class="field__label">Response code (send this back)</span>
+        <textarea id="hostAnswerOutput" class="textarea" rows="3" readonly></textarea>
+        <button id="hostCopyBtn" class="btn btn--ghost">Copy response code</button>
+      </label>
+      <button id="hostEnterBtn" class="btn btn--link">Open the table &rarr;</button>
+    </section>
+
+    <!-- Joiner signaling: create request, paste answer -->
+    <section id="joinSignalView" class="view card hidden">
+      <h2 class="view__title">Join: connect to the host</h2>
+      <ol class="steps">
+        <li>Generate your <strong>request code</strong> and send it to the host.</li>
+        <li>Paste the <strong>response code</strong> they send back.</li>
+        <li>You're in.</li>
+      </ol>
+      <button id="joinGenerateBtn" class="btn btn--primary">Generate request code</button>
+      <label class="field hidden" id="joinRequestField">
+        <span class="field__label">Request code (send this to the host)</span>
+        <textarea id="joinRequestOutput" class="textarea" rows="3" readonly></textarea>
+        <button id="joinCopyBtn" class="btn btn--ghost">Copy request code</button>
+      </label>
+      <label class="field hidden" id="joinAnswerField">
+        <span class="field__label">Paste response code</span>
+        <textarea id="joinAnswerInput" class="textarea" rows="3" placeholder="Paste the host's response code here"></textarea>
+        <button id="joinConnectBtn" class="btn btn--primary">Connect</button>
+      </label>
+    </section>
+
+    <!-- The table: voting -->
+    <section id="tableView" class="view hidden">
+      <div class="table-head">
+        <div>
+          <h2 class="view__title">Round <span id="roundNum">1</span></h2>
+          <p class="table-sub" id="tableSub">Pick your card</p>
+        </div>
+        <div class="table-actions">
+          <span id="rolePill" class="pill"></span>
+          <button id="addPeerBtn" class="btn hidden">+ Add participant</button>
+          <button id="revealBtn" class="btn btn--primary hidden">Reveal</button>
+          <button id="resetBtn" class="btn hidden">New round</button>
+        </div>
+      </div>
+
+      <div id="participants" class="participants"></div>
+
+      <div id="resultBar" class="result-bar hidden">
+        <span>Average: <strong id="avgValue">-</strong></span>
+        <span>Consensus: <strong id="consensusValue">-</strong></span>
+      </div>
+
+      <div class="deck-wrap">
+        <p class="deck-label">Your hand</p>
+        <div id="deck" class="deck"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="lib/loki.min.js"></script>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

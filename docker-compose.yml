@@ -1,0 +1,16 @@
+services:
+  poker:
+    build: .
+    image: planning-poker
+    container_name: planning-poker
+    ports:
+      - "8000:80"
+    # Bind-mount the source read-only so you can edit files and just refresh
+    # the browser - no rebuild needed. Remove this block to run purely from the
+    # image baked at build time.
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+      - ./styles.css:/usr/share/nginx/html/styles.css:ro
+      - ./js:/usr/share/nginx/html/js:ro
+      - ./lib:/usr/share/nginx/html/lib:ro
+    restart: unless-stopped
