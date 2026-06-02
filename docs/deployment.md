@@ -14,7 +14,7 @@ docker compose down            # remove the container
 docker compose logs -f         # follow logs
 ```
 
-The compose file bind-mounts the source read-only, so editing files just needs a browser refresh (no rebuild). See [Dockerfile](../Dockerfile) and [docker-compose.yml](../docker-compose.yml).
+The compose file bind-mounts the whole project read-only, so adding, editing, or removing files just needs a browser refresh (no rebuild, no compose edit). The image build copies everything too; [.dockerignore](../.dockerignore) is the single list of what stays out. See [Dockerfile](../Dockerfile) and [docker-compose.yml](../docker-compose.yml).
 
 ### Any static server
 

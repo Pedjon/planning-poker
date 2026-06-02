@@ -1,7 +1,11 @@
+# Single source of truth for what stays OUT of the image.
+# The Dockerfile copies everything else, so to keep a new file out of the
+# image, just add it here. To include a new asset, do nothing.
 Dockerfile
 .dockerignore
 docker-compose.yml
 .git
 .gitignore
-*.md
 .DS_Store
+docs/
+*.md
