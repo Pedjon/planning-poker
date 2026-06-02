@@ -96,7 +96,9 @@ export class SessionController {
   // ----------------------------- Round actions -----------------------------
   castVote(value) {
     this.myVote = value;
-    if (this.role === 'host') {
+    // Host (or local dev room with no transport) mutates state directly;
+    // a connected client sends the action to the host.
+    if (this.role === 'host' || !this.net) {
       this.store.applyAction(Actions.vote(this.selfId, value));
       this._syncAll();
     } else {
@@ -116,6 +118,29 @@ export class SessionController {
     this.myVote = undefined;
     this._syncAll();
     this.render();
+  }
+
+  // ----------------------------- Dev shortcut -----------------------------
+  // Jump straight to the room with mock participants and no networking.
+  // Driven by js/devConfig.js; intended only for local feature development.
+  enterDevRoom(config = {}) {
+    this.role = config.role === 'join' ? 'join' : 'host';
+    this.name = config.name || 'Dev';
+    log('APP', 'entering DEV room (no networking), role=' + this.role);
+
+    this.store.applyAction(Actions.join(this.selfId, this.name));
+    (config.mockPeers || []).forEach((peer, i) => {
+      const id = 'dev_' + i + '_' + Math.random().toString(36).slice(2, 6);
+      this.store.applyAction(Actions.join(id, peer.name || ('Peer ' + (i + 1))));
+      if (peer.vote !== null && peer.vote !== undefined) {
+        this.store.applyAction(Actions.vote(id, peer.vote));
+      }
+    });
+    if (config.revealed) this.store.applyAction(Actions.reveal());
+
+    this.ui.setStatus('Dev mode', 'connected');
+    this.render();
+    this.ui.goTo('table');
   }
 
   // ----------------------------- Rendering -----------------------------

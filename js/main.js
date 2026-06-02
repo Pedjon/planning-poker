@@ -5,6 +5,7 @@ import { WebRtcTransport } from './adapters/transport/WebRtcTransport.js';
 import { UiAdapter } from './ui/UiAdapter.js';
 import { SessionController } from './application/SessionController.js';
 import { els } from './ui/elements.js';
+import { devConfig } from './devConfig.js';
 
 const store = new LokiSessionStore();
 const transport = new WebRtcTransport();
@@ -95,3 +96,8 @@ els.addPeer.onclick = () => {
 };
 els.reveal.onclick = () => controller.revealRound();
 els.reset.onclick = () => controller.resetRound();
+
+// Dev shortcut: skip setup/signaling and open the room with mock data.
+if (devConfig.enabled) {
+  controller.enterDevRoom(devConfig);
+}
