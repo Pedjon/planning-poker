@@ -295,7 +295,8 @@ body {
   .deck {
     flex-wrap: nowrap;
     overflow-x: auto;
-    padding-bottom: 6px;
+    padding-top: 12px;
+    padding-bottom: 12px;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
   }
