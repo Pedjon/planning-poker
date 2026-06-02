@@ -66,21 +66,23 @@ sequenceDiagram
 
 ## In-band signaling (every link after the first)
 
-New links never need copy-paste. The dialer floods a `signal` frame addressed to its target; intermediate peers relay it until it arrives, then the answer comes back the same way.
+New links never need copy-paste. The dialer floods a `signal` frame addressed to its target; intermediate peers relay it until it arrives, then the answer comes back the same way. In-band links use **trickle ICE**: the offer/answer is sent immediately and candidates stream as they are discovered (no `waitForIce`), so links open in well under a second instead of waiting out the gathering timeout.
 
 ```mermaid
 sequenceDiagram
   participant C as C (lower id, dials)
   participant A as A (relay)
   participant X as X (target)
-  C->>C: ensureConnectedTo(X) -> createOffer + waitForIce
-  C-->>A: signal{ to:X, offer }   (flooded)
-  A-->>X: signal{ to:X, offer }   (relayed)
-  X->>X: setRemoteDescription + createAnswer + waitForIce
-  X-->>A: signal{ to:C, answer }  (flooded)
-  A-->>C: signal{ to:C, answer }  (relayed)
+  C->>C: ensureConnectedTo(X) -> createOffer (sent immediately)
+  C-->>X: signal{ to:X, offer }   (flooded, relayed via A)
+  X->>X: setRemoteDescription + createAnswer (sent immediately)
+  X-->>C: signal{ to:C, answer }  (flooded, relayed via A)
   C->>C: setRemoteDescription(answer)
-  Note over C,X: direct C <-> X data channel OPEN
+  par candidates stream both ways as gathered
+    C-->>X: signal{ candidate }
+    X-->>C: signal{ candidate }
+  end
+  Note over C,X: addIceCandidate as they arrive -> direct C <-> X OPEN
 ```
 
 ### Frame envelope and the flood relay
@@ -89,13 +91,20 @@ Every byte on a channel is one envelope: `{ mid, from, to, kind, body }`.
 
 - `mid` is a unique id; each peer keeps a bounded set of seen `mid`s and drops duplicates, which stops flood loops.
 - `to` is a target id, or `null` for a broadcast.
-- `kind` is `signal` (consumed inside the transport) or `app` (handed to the controller).
+- `kind` is `signal` (consumed inside the transport), `app` (handed to the controller), or `ping` (heartbeat, see below).
 
 A peer that receives a frame not addressed to it simply re-floods it to its other open channels. With a connected graph this reliably reaches a peer you have no direct link to yet - which is exactly how a brand-new joiner negotiates links to members it has never spoken to. Once the direct channel is up, traffic between them is a single hop.
 
-### Non-trickle ICE (why we wait)
+### Trickle vs bundled ICE
 
-ICE candidates are normally discovered over time ("trickle"). Both the manual first link (one pasted code) and the Phase A in-band links wait until ICE gathering is fully complete before producing the SDP, so every candidate is already embedded. That is what `waitForIce(pc)` does in [signaling.js](../js/adapters/transport/signaling.js): it resolves when `iceGatheringState === 'complete'`, or after a safety timeout (`ICE_WAIT_MS`, 6s) so a slow/unreachable TURN server can't block forever. (Sending candidates incrementally - real trickle ICE - is a planned Phase C speed-up; the `SignalTypes.candidate` slot in [messages.js](../js/domain/messages.js) is reserved for it.)
+ICE candidates are normally discovered over time ("trickle"). The two link types handle them differently:
+
+- **In-band (auto) links trickle.** `ensureConnectedTo` and the in-band `onSignal` handler send the offer/answer right after `setLocalDescription` and then stream each candidate as a `signal` of type `candidate` (`SignalTypes.candidate`). The receiver calls `addIceCandidate` as they arrive. Because flooded frames can arrive out of order, candidates that show up before the remote description is set are buffered per peer (`candBuf`) and flushed once `setRemoteDescription` resolves.
+- **The manual first link bundles.** There is no channel yet to trickle over, so it still waits for full gathering with `waitForIce(pc)` in [signaling.js](../js/adapters/transport/signaling.js) (resolves on `iceGatheringState === 'complete'` or after `ICE_WAIT_MS`, 6s) and embeds every candidate in the one pasted code.
+
+### Heartbeat / liveness
+
+`connectionState` can take 15s+ to flip to `failed`, and on some silent drops (laptop sleep, yanked network) it never does. So the transport also runs a heartbeat: every `HEARTBEAT_INTERVAL_MS` (3s) it sends a `ping` frame to each open neighbor and records `lastSeen` on any inbound traffic. A link that has opened but received nothing for `HEARTBEAT_TIMEOUT_MS` (9s, ~3 missed pings) is torn down with `removeLink`, which fires `onPeerClose` and lets the controller re-elect a coordinator promptly. Links that have not opened yet are exempt, so a manual link can sit pending while a human relays the answer code. Timing constants live in [iceConfig.js](../js/adapters/transport/iceConfig.js).
 
 ### Idempotent answer handling
 

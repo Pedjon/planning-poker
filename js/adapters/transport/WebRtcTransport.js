@@ -8,14 +8,24 @@
 // directly connected to. Once the direct link is up, traffic flows point to
 // point.
 //
+// In-band links use trickle ICE: the offer/answer is sent immediately and ICE
+// candidates stream as they are discovered (much faster than waiting for full
+// gathering). The manual first link can't trickle - there is no channel yet -
+// so it still bundles all candidates via waitForIce.
+//
+// A heartbeat pings every direct neighbor periodically; a link that goes quiet
+// for too long is declared dead and torn down, which fires onPeerClose and lets
+// the controller re-elect a coordinator quickly (even on silent drops that
+// never flip connectionState to 'failed').
+//
 // Frame envelope (every byte on a channel is one of these):
 //   { mid, from, to, kind, body }
 //     mid  - unique id, used to dedupe floods and stop loops
 //     from - id of the original sender (survives relays)
 //     to   - target peer id, or null for "everyone" (broadcast)
-//     kind - 'signal' (consumed here) or 'app' (handed to the controller)
-//     body - the signal payload or the application message
-import { ICE_CONFIG } from './iceConfig.js';
+//     kind - 'signal'/'app' (signal consumed here, app -> controller) or 'ping'
+//     body - the signal payload or the application message ('ping' has none)
+import { ICE_CONFIG, HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS } from './iceConfig.js';
 import { encode, decode, waitForIce } from './signaling.js';
 import { diagnose } from './diagnostics.js';
 import { SignalTypes } from '../../domain/messages.js';
@@ -26,14 +36,25 @@ function nextMid(selfId) {
   return selfId + ':' + (++MID_SEQ) + ':' + Date.now().toString(36);
 }
 
+// RTCIceCandidate is not plain JSON; keep only the fields addIceCandidate needs.
+function serializeCandidate(c) {
+  return {
+    candidate: c.candidate,
+    sdpMid: c.sdpMid,
+    sdpMLineIndex: c.sdpMLineIndex,
+    usernameFragment: c.usernameFragment
+  };
+}
+
 export class WebRtcTransport {
   // Spin up the mesh for this peer. `handlers`:
   //   onMessage(appMsg, fromId) - an application frame arrived
   //   onPeerOpen(peerId)        - a direct data channel opened
   //   onPeerClose(peerId)       - a direct link failed/closed
   init({ selfId, handlers }) {
-    const links = new Map();   // peerId -> { pc, channel }
+    const links = new Map();   // peerId -> { pc, channel, open, lastSeen }
     const dialing = new Set(); // peerIds we've already started offering to
+    const candBuf = new Map(); // peerId -> [candidate] arrived before remoteDescription
     const seenOrder = [];      // ring buffer of recent mids
     const seen = new Set();
     let pending = null;        // { pc, channel } for a manual offer awaiting its answer
@@ -68,6 +89,7 @@ export class WebRtcTransport {
       if (!lk) return;
       links.delete(peerId);
       dialing.delete(peerId);
+      candBuf.delete(peerId);
       try { lk.pc.close(); } catch (e) { /* ignore */ }
       if (handlers.onPeerClose) handlers.onPeerClose(peerId);
     }
@@ -83,10 +105,34 @@ export class WebRtcTransport {
       return pc;
     }
 
+    // Stream local ICE candidates to a peer as they are gathered (in-band links
+    // only). addEventListener keeps the diagnose() icecandidate logger intact.
+    function enableTrickle(pc, peerId) {
+      pc.addEventListener('icecandidate', (e) => {
+        if (e.candidate) {
+          relaySignal(peerId, { type: SignalTypes.candidate, candidate: serializeCandidate(e.candidate) });
+        }
+      });
+    }
+
+    // Apply any candidates that arrived before the remote description was ready.
+    function flushCandidates(peerId) {
+      const lk = links.get(peerId);
+      const buf = candBuf.get(peerId);
+      if (!lk || !buf) return;
+      candBuf.delete(peerId);
+      buf.forEach((c) => {
+        lk.pc.addIceCandidate(c).catch((err) => warn('MESH', 'addIceCandidate (buffered) failed', err));
+      });
+    }
+
     function wireChannel(channel, getPeerId, label) {
       channel.onopen = () => {
-        log(label, 'channel OPEN <-> ' + getPeerId());
-        if (handlers.onPeerOpen) handlers.onPeerOpen(getPeerId());
+        const peerId = getPeerId();
+        log(label, 'channel OPEN <-> ' + peerId);
+        const lk = links.get(peerId);
+        if (lk) { lk.open = true; lk.lastSeen = Date.now(); }
+        if (handlers.onPeerOpen) handlers.onPeerOpen(peerId);
       };
       channel.onclose = () => {
         log(label, 'channel CLOSE <-> ' + getPeerId());
@@ -102,6 +148,10 @@ export class WebRtcTransport {
 
     function onFrame(frame, sourceId) {
       if (!frame || !frame.mid) return;
+      // Any inbound traffic from a neighbor proves the link is alive - record it
+      // before the dedupe check, since even a duplicate is a sign of life.
+      const src = links.get(sourceId);
+      if (src) src.lastSeen = Date.now();
       if (!markSeen(frame.mid)) return; // already handled this one
       const broadcast = frame.to == null;
       const toMe = frame.to === selfId;
@@ -114,6 +164,7 @@ export class WebRtcTransport {
     }
 
     function consume(frame) {
+      if (frame.kind === 'ping') return; // liveness only; lastSeen already bumped
       if (frame.kind === 'signal') return onSignal(frame.from, frame.body);
       if (frame.kind === 'app' && handlers.onMessage) handlers.onMessage(frame.body, frame.from);
     }
@@ -132,7 +183,8 @@ export class WebRtcTransport {
         } else {
           const label = 'MESH<-' + from;
           pc = newPc(from, label);
-          lk = { pc, channel: null };
+          enableTrickle(pc, from);
+          lk = { pc, channel: null, open: false, lastSeen: Date.now() };
           links.set(from, lk);
           pc.ondatachannel = (e) => {
             lk.channel = e.channel;
@@ -140,39 +192,50 @@ export class WebRtcTransport {
           };
         }
         pc.setRemoteDescription(body.desc)
-          .then(() => pc.createAnswer())
+          .then(() => { flushCandidates(from); return pc.createAnswer(); })
           .then((answer) => pc.setLocalDescription(answer))
-          .then(() => waitForIce(pc))
           .then(() => relaySignal(from, { type: SignalTypes.answer, desc: pc.localDescription }))
           .catch((err) => warn('MESH<-' + from, 'answer failed', err));
       } else if (body.type === SignalTypes.answer) {
         const lk = links.get(from);
         if (!lk || lk.pc.signalingState !== 'have-local-offer') return;
         lk.pc.setRemoteDescription(body.desc)
+          .then(() => flushCandidates(from))
           .catch((err) => warn('MESH->' + from, 'applying answer failed', err));
+      } else if (body.type === SignalTypes.candidate) {
+        const lk = links.get(from);
+        if (lk && lk.pc.remoteDescription) {
+          lk.pc.addIceCandidate(body.candidate).catch((err) => warn('MESH', 'addIceCandidate failed', err));
+        } else {
+          const buf = candBuf.get(from) || [];
+          buf.push(body.candidate);
+          candBuf.set(from, buf);
+        }
       }
     }
 
     // Open a direct link to `peerId` if we don't have one. Deterministic dialer
     // rule avoids offer glare: the peer with the lower id always offers, the
-    // other waits for it.
+    // other waits for it. Uses trickle ICE: the offer goes out immediately.
     function ensureConnectedTo(peerId) {
       if (peerId === selfId || links.has(peerId) || dialing.has(peerId)) return;
       if (!(selfId < peerId)) return; // higher id waits to be dialed
       dialing.add(peerId);
       const label = 'MESH->' + peerId;
       const pc = newPc(peerId, label);
+      enableTrickle(pc, peerId);
       const channel = pc.createDataChannel('poker');
-      links.set(peerId, { pc, channel });
+      links.set(peerId, { pc, channel, open: false, lastSeen: Date.now() });
       wireChannel(channel, () => peerId, label);
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() => waitForIce(pc))
         .then(() => relaySignal(peerId, { type: SignalTypes.offer, desc: pc.localDescription }))
         .catch((err) => warn(label, 'offer failed', err));
     }
 
     // ----------------------------- manual first link -----------------------------
+    // Bundled (non-trickle): there is no channel yet to stream candidates over,
+    // so we wait for ICE gathering and embed every candidate in the one code.
     function createManualOffer() {
       const label = 'MANUAL(offer)';
       const pc = newPc('pending', label);
@@ -197,7 +260,7 @@ export class WebRtcTransport {
       }
       const remoteId = env.id;
       const channel = pending.channel;
-      links.set(remoteId, { pc, channel });
+      links.set(remoteId, { pc, channel, open: false, lastSeen: Date.now() });
       pending = null;
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') removeLink(remoteId);
@@ -215,7 +278,7 @@ export class WebRtcTransport {
       const remoteId = env.id;
       const label = 'MANUAL<-' + remoteId;
       const pc = newPc(remoteId, label);
-      const lk = { pc, channel: null };
+      const lk = { pc, channel: null, open: false, lastSeen: Date.now() };
       links.set(remoteId, lk);
       pc.ondatachannel = (e) => {
         lk.channel = e.channel;
@@ -228,6 +291,25 @@ export class WebRtcTransport {
         .then(() => waitForIce(pc))
         .then(() => encode({ id: selfId, desc: pc.localDescription }));
     }
+
+    // ----------------------------- heartbeat -----------------------------
+    // Ping every open neighbor, then drop any open link that has gone silent
+    // past the timeout. Links that have not opened yet are skipped: a manual
+    // link can legitimately sit pending while a human relays the answer code.
+    function heartbeatTick() {
+      const now = Date.now();
+      links.forEach((lk, peerId) => {
+        if (lk.channel && lk.channel.readyState === 'open') {
+          const frame = { mid: nextMid(selfId), from: selfId, to: peerId, kind: 'ping' };
+          try { lk.channel.send(JSON.stringify(frame)); } catch (e) { /* ignore */ }
+        }
+        if (lk.open && now - (lk.lastSeen || 0) > HEARTBEAT_TIMEOUT_MS) {
+          warn('HB', 'peer ' + peerId + ' timed out (' + (now - lk.lastSeen) + 'ms) - dropping');
+          removeLink(peerId);
+        }
+      });
+    }
+    setInterval(heartbeatTick, HEARTBEAT_INTERVAL_MS);
 
     // ----------------------------- app messaging -----------------------------
     function broadcast(msg) {

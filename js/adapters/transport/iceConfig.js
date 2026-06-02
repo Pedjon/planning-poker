@@ -28,5 +28,12 @@ export const ICE_CONFIG = {
   ]
 };
 
-// TURN relay can take longer to allocate; give gathering some headroom.
+// TURN relay can take longer to allocate; give gathering some headroom. Only
+// the manual first link waits this long - in-band links trickle ICE instead.
 export const ICE_WAIT_MS = 6000;
+
+// Heartbeat: a ping is sent to every direct neighbor on this cadence, and a
+// link with no inbound traffic for longer than the timeout is declared dead.
+// The timeout is a few missed pings so transient lag doesn't drop a peer.
+export const HEARTBEAT_INTERVAL_MS = 3000;
+export const HEARTBEAT_TIMEOUT_MS = 9000;

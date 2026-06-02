@@ -1,11 +1,11 @@
 # Serverless reconnection - design analysis
 
-Status: **Option A implemented (Phase A)**; C and D still pending. Captures the discussion about keeping a room alive / simplifying reconnection when the host loses its connection, while staying serverless.
+Status: **Options A and C implemented (Phases A, C)**; D still pending. Captures the discussion about keeping a room alive / simplifying reconnection when the host loses its connection, while staying serverless.
 
 ## Implementation status
 
 - **A - full mesh + in-band signaling + deterministic election: DONE.** The transport now builds a full mesh ([WebRtcTransport.js](../js/adapters/transport/WebRtcTransport.js)) via a flooded in-band `signal` relay, and the coordinator is elected by seniority (earliest `joinedAt`, id tie-break) in [SessionController.js](../js/application/SessionController.js). Host loss is a silent role swap. Election is by seniority rather than the originally-sketched "lowest id" so the room creator stays host while present.
-- **C - heartbeat + trickle ICE: pending.** In-band links still wait for full ICE gathering (non-trickle). A `SignalTypes.candidate` slot is reserved in [messages.js](../js/domain/messages.js); silent-drop detection currently relies on `connectionState`/channel close, not a heartbeat.
+- **C - heartbeat + trickle ICE: DONE.** In-band links trickle ICE (offer/answer sent immediately, candidates streamed as `SignalTypes.candidate` and buffered until the remote description is set), so auto-links open in well under a second. A heartbeat (`HEARTBEAT_INTERVAL_MS` / `HEARTBEAT_TIMEOUT_MS` in [iceConfig.js](../js/adapters/transport/iceConfig.js)) pings neighbors and drops a silent link in ~9s, firing `onPeerClose` so the election runs even when `connectionState` never reaches `failed`. The manual first link still bundles ICE (no channel to trickle over yet).
 - **D - URL/QR + LokiJS persistence: pending.** Manual signaling is still a copy-paste code; state is in-memory only.
 
 ## Problem
@@ -58,10 +58,10 @@ With in-band signaling, all options below cost zero extra copy-paste.
 - Each peer keeps one extra link to a designated vice-host (e.g. the second peer to join), set up via in-band signaling.
 - If the host dies, the vice-host promotes; peers are already linked to it (or re-link quickly using cached info relayed earlier). Fewer connections than full mesh, a bit more logic to keep the backup fresh.
 
-### C. Failover + fast re-signaling
-- Detect host loss via existing `onClose` / `connectionState` plus a heartbeat (so silent drops are noticed).
-- For any re-link, use trickle ICE over the data channel (send candidates as they arrive) instead of the non-trickle "wait for gathering" used for copy-paste - reconnection becomes fast and automatic.
-- Add bounded auto-retry with backoff.
+### C. Failover + fast re-signaling (IMPLEMENTED)
+- Detect host loss via existing `connectionState` plus a heartbeat (so silent drops are noticed within ~9s). DONE.
+- In-band links use trickle ICE over the data channel (candidates sent as they arrive) instead of the non-trickle "wait for gathering" used for the manual code - links form fast and automatically. DONE.
+- Bounded auto-retry with backoff was not needed: a dropped peer is simply re-dialed through the existing roster / `ensureConnectedTo` path.
 
 ### D. Graceful manual fallback (when redundancy is exhausted)
 - If every channel is gone (everyone refreshed, or the first connection never had a backup), human signaling is unavoidable. Make it painless:
