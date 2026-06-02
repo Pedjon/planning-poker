@@ -38,6 +38,8 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 16px 24px;
+  padding-left: max(24px, env(safe-area-inset-left));
+  padding-right: max(24px, env(safe-area-inset-right));
   border-bottom: 1px solid var(--border);
 }
 
@@ -64,6 +66,8 @@ body {
   max-width: 920px;
   margin: 0 auto;
   padding: 28px 20px 64px;
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
 }
 
 .view { animation: fade 0.25s ease; }
@@ -241,4 +245,71 @@ body {
   border-color: var(--accent);
   color: #fff;
   transform: translateY(-6px);
+}
+
+/* ---------------------------------------------------------------------------
+   Responsive / mobile
+   --------------------------------------------------------------------------- */
+
+/* Tablets and below */
+@media (max-width: 720px) {
+  .topbar { padding: 12px 16px; }
+  .logo { font-size: 16px; }
+
+  .app { padding: 18px 14px 48px; }
+
+  .card {
+    padding: 20px 18px;
+    margin: 16px auto;
+  }
+
+  .view__title { font-size: 18px; margin-bottom: 14px; }
+
+  /* Stack the host/join action buttons so they're easy to tap */
+  .role-buttons { flex-direction: column; }
+  .role-buttons .btn { width: 100%; }
+
+  /* Stack the table header above its action buttons */
+  .table-head { flex-direction: column; align-items: stretch; }
+  .table-actions { width: 100%; }
+  .table-actions .btn { flex: 1 1 auto; }
+  .table-actions .pill { flex: 0 0 auto; }
+
+  .result-bar { flex-wrap: wrap; gap: 12px 24px; }
+
+  .participants {
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 10px;
+  }
+  .seat__card { height: 64px; font-size: 22px; }
+
+  /* The voting deck scrolls horizontally instead of wrapping awkwardly */
+  .deck {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .card-btn { flex: 0 0 auto; }
+}
+
+/* Phones */
+@media (max-width: 420px) {
+  .participants { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+  .seat { padding: 10px 8px; }
+  .seat__card { height: 56px; font-size: 20px; }
+  .card-btn { width: 54px; height: 78px; font-size: 20px; }
+}
+
+/* 16px form fonts stop iOS Safari from auto-zooming on focus */
+@media (max-width: 720px) {
+  .input { font-size: 16px; }
+  .textarea { font-size: 14px; }
+}
+
+/* Avoid sticky :hover lift on touch devices (it can leave cards stuck up) */
+@media (hover: none) {
+  .card-btn:hover { transform: none; }
+  .card-btn:active { transform: translateY(-4px); }
 }
