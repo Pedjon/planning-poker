@@ -83,8 +83,8 @@ docs/                       architecture, webrtc, deployment
 ## Limitations
 
 - **NAT traversal**: serverless WebRTC can't connect every network pair. Same easy/cone NATs connect via STUN; symmetric NAT / strict firewalls / corporate VPNs need a reachable **TURN** relay (see [docs/webrtc.md](docs/webrtc.md#nat-stun-and-turn)).
-- **Coordinator handoff, not persistence**: if the coordinator's tab closes, the mesh elects the next-most-senior peer and the session continues - but if *everyone* leaves, in-memory state is gone (persistence is a planned follow-up).
-- **Manual signaling for the first link**: the first person to join still does one copy-paste exchange; every link after that is automatic.
+- **Coordinator handoff**: if the coordinator's tab closes, the mesh elects the next-most-senior peer and the session continues. A refresh resumes the round/reveal state from sessionStorage, but if *everyone* leaves the live state is gone (only round/revealed persist, not the roster).
+- **Manual signaling for the first link**: the first person to join still does one exchange, but it can be a shareable link (open a request link to host); every link after that is automatic.
 - **Mesh cost**: `O(n^2)` connections - fine for a planning-poker team, not for large groups.
 
 ## License

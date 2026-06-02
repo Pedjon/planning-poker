@@ -17,6 +17,7 @@ import {
 } from '../domain/messages.js';
 import { computeResults } from '../domain/results.js';
 import { log } from '../infra/logger.js';
+import { getStableId } from '../infra/persistence.js';
 
 function genId() {
   return 'p_' + Math.random().toString(36).slice(2, 10);
@@ -28,7 +29,7 @@ export class SessionController {
     this.transport = transport;
     this.ui = ui;
 
-    this.selfId = genId();
+    this.selfId = getStableId(genId); // stable per-tab across refresh
     this.name = '';
     this.role = null;       // 'host' (created the room) or 'join'
     this.net = null;

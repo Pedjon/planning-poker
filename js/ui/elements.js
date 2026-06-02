@@ -10,6 +10,7 @@ export const els = {
   name: $('nameInput'),
   hostBtn: $('hostBtn'),
   joinBtn: $('joinBtn'),
+  setupHint: $('setupHint'),
   // host signaling
   hostReqIn: $('hostRequestInput'),
   hostGen: $('hostGenerateBtn'),

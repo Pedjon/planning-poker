@@ -49,6 +49,10 @@ When two peers try to connect to each other, both creating offers at once causes
 
 The joiner creates the offer; the existing member answers. A "code" is `{ id, desc }` (the peer's id plus its local description), JSON-stringified and base64-encoded - see `encode`/`decode` in [signaling.js](../js/adapters/transport/signaling.js). Embedding the id lets each side learn who it just connected to.
 
+### Shareable links
+
+To avoid pasting raw codes, each code is also offered as a URL via [shareLinks.js](../js/ui/shareLinks.js): a request link (`#req=<code>`) and a response link (`#ans=<code>`). Opening a request link in a fresh tab routes the opener straight into the host/accept flow (enter a name, host, and the response link is generated automatically). The response cannot be "opened" in a new tab - the joiner's offer lives in the original tab's `RTCPeerConnection` - so it travels back as a link or code the joiner pastes into the tab that is still waiting. Every input accepts a link or a bare code (`extractCode`), so older raw codes still work. QR is intentionally not generated: a bundled SDP is usually too large to scan reliably.
+
 ```mermaid
 sequenceDiagram
   participant J as Joiner

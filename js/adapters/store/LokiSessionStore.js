@@ -4,6 +4,7 @@
 //
 // LokiJS is loaded as a global UMD script (lib/loki.min.js), so we read it
 // from window rather than importing it.
+import { loadSessionState, saveSessionState } from '../../infra/persistence.js';
 
 export class LokiSessionStore {
   constructor() {
@@ -11,7 +12,14 @@ export class LokiSessionStore {
     this.db = new Loki('planningpoker.db');
     this.participants = this.db.addCollection('participants', { unique: ['id'] });
     this.session = this.db.addCollection('session');
-    this.session.insert({ key: 'state', revealed: false, round: 1 });
+    // Resume session-level state across a refresh (round/revealed only -
+    // participants are never persisted; the mesh re-syncs the live roster).
+    const saved = loadSessionState();
+    this.session.insert({
+      key: 'state',
+      revealed: saved ? saved.revealed : false,
+      round: saved ? saved.round : 1
+    });
   }
 
   getSession() {
@@ -57,9 +65,15 @@ export class LokiSessionStore {
     s.revealed = !!(snap.session && snap.session.revealed);
     s.round = (snap.session && snap.session.round) || 1;
     this.session.update(s);
+    this._persistSession();
   }
 
   // ----------------------------- internals -----------------------------
+  _persistSession() {
+    const s = this.getSession();
+    saveSessionState({ round: s.round, revealed: s.revealed });
+  }
+
   _upsertParticipant(id, name) {
     const existing = this.participants.findOne({ id });
     if (existing) {
@@ -92,6 +106,7 @@ export class LokiSessionStore {
     const s = this.getSession();
     s.revealed = true;
     this.session.update(s);
+    this._persistSession();
   }
 
   _reset() {
@@ -104,5 +119,6 @@ export class LokiSessionStore {
       p.hasVoted = false;
       return p;
     });
+    this._persistSession();
   }
 }
