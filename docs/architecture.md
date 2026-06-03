@@ -43,8 +43,8 @@ flowchart TB
 
 ### Application (`js/application/`) - use-cases and orchestration
 - [SessionController.js](../js/application/SessionController.js) holds session state (`selfId`, `name`, `role`, `myVote`, `lastRound`, `connected`) and exposes use-cases:
-  - Host: `host(name)`, `acceptJoinRequest(code)`
-  - Join: `join(name)`, `createJoinRequest()`, `submitAnswer(code)`
+  - Host: `host(name)`, `createInvite()`, `applyResponse(code)`
+  - Join: `join(name)`, `acceptInvite(code)`
   - Round: `castVote(value)`, `revealRound()`, `resetRound()`
   - Rendering: `buildViewModel()` -> `render()`
 - It depends only on the injected ports (`store`, `transport`, `ui`) and the pure domain. It never touches the DOM, WebRTC, or LokiJS directly.

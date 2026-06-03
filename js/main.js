@@ -24,62 +24,65 @@ function requireName() {
   return name;
 }
 
-function hostGenerate() {
-  const code = extractCode(els.hostReqIn.value);
-  if (!code) return;
-  els.hostGen.disabled = true;
-  els.hostGen.textContent = 'Generating...';
-  controller.acceptJoinRequest(code).then((answer) => {
-    els.hostAnsOut.value = buildShareUrl('ans', answer);
-    els.hostAnsField.classList.remove('hidden');
-    els.hostGen.disabled = false;
-    els.hostGen.textContent = 'Generate response link';
+// Host: create an invite (offer) and show it as a shareable link. This tab now
+// holds the pending offer, so an incoming response link can be applied live here.
+function hostGenerateInvite() {
+  els.hostInviteBtn.disabled = true;
+  els.hostInviteBtn.textContent = 'Generating...';
+  controller.createInvite().then((offer) => {
+    els.hostInviteOut.value = buildShareUrl('inv', offer);
+    els.hostInviteField.classList.remove('hidden');
+    awaitingResponse = true;
+    // Keep disabled: regenerating would invalidate the response the joiner returns.
+    els.hostInviteBtn.textContent = 'Invite link ready';
   }).catch((err) => {
-    els.hostGen.disabled = false;
-    els.hostGen.textContent = 'Generate response link';
-    alert('Could not read that request link. Ask for a fresh one.\n\n' + err);
+    els.hostInviteBtn.disabled = false;
+    els.hostInviteBtn.textContent = 'Generate invite link';
+    alert('Could not create an invite link.\n\n' + err);
   });
 }
 
-function joinGenerate() {
-  els.joinGen.disabled = true;
-  els.joinGen.textContent = 'Generating...';
-  controller.createJoinRequest().then((offer) => {
-    els.joinReqOut.value = buildShareUrl('req', offer);
-    els.joinReqField.classList.remove('hidden');
-    els.joinAnsField.classList.remove('hidden');
-    // This tab now holds the pending offer, so an incoming answer link can be
-    // applied live here (see routeFromHash).
-    awaitingAnswer = true;
-    // Keep disabled: regenerating would invalidate the answer the host returns.
-    els.joinGen.textContent = 'Request link ready';
-  }).catch((err) => {
-    els.joinGen.disabled = false;
-    els.joinGen.textContent = 'Generate request link';
-    alert('Could not create a request link.\n\n' + err);
-  });
-}
-
-function joinConnect() {
+// Host: apply the joiner's response (answer) to finish the connection.
+function hostConnect() {
   if (controller.isConnected()) { ui.goTo('table'); return; }
-  const code = extractCode(els.joinAnsIn.value);
+  const code = extractCode(els.hostRespIn.value);
   if (!code) return;
-  els.joinConnect.disabled = true;
-  els.joinConnect.textContent = 'Connecting...';
-  controller.submitAnswer(code).catch((err) => {
-    els.joinConnect.disabled = false;
-    els.joinConnect.textContent = 'Connect';
-    alert('Could not read that response link. Ask the host for a fresh one.\n\n' + err);
+  els.hostConnect.disabled = true;
+  els.hostConnect.textContent = 'Connecting...';
+  controller.applyResponse(code).then(() => {
+    els.hostConnect.textContent = 'Connected';
+  }).catch((err) => {
+    els.hostConnect.disabled = false;
+    els.hostConnect.textContent = 'Connect';
+    alert('Could not read that response link. Ask the participant for a fresh one.\n\n' + err);
+  });
+}
+
+// Joiner: accept the host's invite (offer) and produce a response link to send back.
+function joinRespond() {
+  const code = extractCode(els.joinInviteIn.value);
+  if (!code) return;
+  els.joinRespond.disabled = true;
+  els.joinRespond.textContent = 'Generating...';
+  controller.acceptInvite(code).then((answer) => {
+    els.joinRespOut.value = buildShareUrl('res', answer);
+    els.joinRespField.classList.remove('hidden');
+    // Keep disabled: regenerating against a new invite would orphan this one.
+    els.joinRespond.textContent = 'Response link ready';
+  }).catch((err) => {
+    els.joinRespond.disabled = false;
+    els.joinRespond.textContent = 'Generate response link';
+    alert('Could not read that invite link. Ask the host for a fresh one.\n\n' + err);
   });
 }
 
 // ----------------------------- link routing -----------------------------
-// A request link opened in a fresh tab means "someone wants to join you": the
-// opener becomes the host. An answer link only makes sense in the tab that
-// already created a request (awaitingAnswer), since the pending RTCPeerConnection
-// lives there; opening it fresh just shows guidance.
-let pendingReq = null;
-let awaitingAnswer = false;
+// An invite link (the host's offer) opened in a fresh tab means "the host wants
+// you to join": the opener becomes a joiner. A response link (the joiner's
+// answer) only makes sense in the tab that generated the invite (awaitingResponse),
+// since the pending RTCPeerConnection lives there; opening it fresh shows guidance.
+let pendingInvite = null;
+let awaitingResponse = false;
 
 function clearHash() {
   if (window.history && window.history.replaceState) {
@@ -87,87 +90,94 @@ function clearHash() {
   }
 }
 
-// Repurpose the setup screen as an "accept a join request" prompt: the opener
-// still enters a name, then a single click hosts and auto-generates the response.
+// Repurpose the setup screen as a "join this session" prompt: the opener still
+// enters a name, then a single click joins and auto-generates the response link.
 function enterAcceptMode() {
-  els.setupTitle.textContent = 'Accept a join request';
-  els.joinBtn.classList.add('hidden');
-  els.hostBtn.textContent = 'Accept & generate link';
+  els.setupTitle.textContent = 'Join a session';
+  els.hostBtn.classList.add('hidden');
+  els.joinBtn.textContent = 'Join & generate response';
   els.setupHint.textContent =
-    'Someone wants to join. Enter your name to accept and generate a response link to send back to them.';
+    'You were invited to a session. Enter your name to join and generate a response link to send back to the host.';
   ui.goTo('setup');
   els.name.focus();
 }
 
-function routeFromHash(parsed, { live } = {}) {
+function routeFromHash(parsed) {
   if (!parsed) return;
   const { kind, code } = parsed;
 
-  if (kind === 'req') {
-    // If already hosting, a request link means "add this participant": jump to
-    // the host signaling screen and produce a response link right away.
-    if (controller.role === 'host' && controller.net) {
-      ui.goTo('hostSignal');
-      els.hostReqIn.value = code;
-      hostGenerate();
+  if (kind === 'inv') {
+    // If already in a session, an invite means "connect to this person too":
+    // jump to the join screen and produce a response link right away.
+    if (controller.net) {
+      ui.goTo('joinSignal');
+      els.joinInviteIn.value = code;
+      joinRespond();
     } else {
-      pendingReq = code;
+      pendingInvite = code;
       enterAcceptMode();
     }
     clearHash();
     return;
   }
 
-  if (kind === 'ans') {
-    if (awaitingAnswer) {
-      // Same tab that created the request: apply the answer and connect.
-      els.joinAnsIn.value = code;
-      joinConnect();
+  if (kind === 'res') {
+    if (awaitingResponse) {
+      // Same tab that generated the invite: apply the response and connect.
+      els.hostRespIn.value = code;
+      hostConnect();
     } else {
       // Fresh tab (the pending offer was lost on reload): can't connect here.
-      ui.goTo('joinSignal');
-      els.joinAnsIn.value = code;
-      els.joinHint.textContent =
-        'This response belongs to the tab where you created your request. Open it there, ' +
+      ui.goTo('hostSignal');
+      els.hostRespIn.value = code;
+      els.hostHint.textContent =
+        'This response belongs to the tab where you generated the invite. Open it there, ' +
         'or paste this response into that tab\u2019s response field.';
-      els.joinHint.classList.remove('hidden');
+      els.hostHint.classList.remove('hidden');
     }
     clearHash();
   }
 }
 
-routeFromHash(readIncomingHash(), { live: false });
-window.addEventListener('hashchange', () => routeFromHash(readIncomingHash(), { live: true }));
+routeFromHash(readIncomingHash());
+window.addEventListener('hashchange', () => routeFromHash(readIncomingHash()));
 
 // ----------------------------- event wiring -----------------------------
 els.hostBtn.onclick = () => {
   const name = requireName();
-  if (!name) return;
-  controller.host(name);
-  if (pendingReq) {
-    els.hostReqIn.value = pendingReq;
-    pendingReq = null;
-    hostGenerate();
-  }
+  if (name) controller.host(name);
 };
 
 els.joinBtn.onclick = () => {
   const name = requireName();
-  if (name) controller.join(name);
+  if (!name) return;
+  controller.join(name);
+  if (pendingInvite) {
+    els.joinInviteIn.value = pendingInvite;
+    pendingInvite = null;
+    joinRespond();
+  }
 };
 
-els.hostGen.onclick = hostGenerate;
-els.hostCopy.onclick = () => ui.copy(els.hostAnsOut);
+els.hostInviteBtn.onclick = hostGenerateInvite;
+els.hostInviteCopy.onclick = () => ui.copy(els.hostInviteOut);
+els.hostConnect.onclick = hostConnect;
 els.hostEnter.onclick = () => { controller.render(); ui.goTo('table'); };
 
-els.joinGen.onclick = joinGenerate;
-els.joinCopy.onclick = () => ui.copy(els.joinReqOut);
-els.joinConnect.onclick = joinConnect;
+els.joinRespond.onclick = joinRespond;
+els.joinRespCopy.onclick = () => ui.copy(els.joinRespOut);
 
 els.addPeer.onclick = () => {
-  els.hostReqIn.value = '';
-  els.hostAnsOut.value = '';
-  els.hostAnsField.classList.add('hidden');
+  // Reset for the next serialized invite.
+  els.hostInviteOut.value = '';
+  els.hostInviteField.classList.add('hidden');
+  els.hostHint.classList.add('hidden');
+  els.hostRespIn.value = '';
+  els.hostInviteBtn.disabled = false;
+  els.hostInviteBtn.textContent = 'Generate invite link';
+  els.hostConnect.disabled = false;
+  els.hostConnect.textContent = 'Connect';
+  awaitingResponse = false;
   ui.goTo('hostSignal');
 };
 els.reveal.onclick = () => controller.revealRound();

@@ -27,46 +27,46 @@
       <p class="hint" id="setupHint">Hosting? Share the response link with each person who wants to join. Joining? Create a request link and send it to the host.</p>
     </section>
 
-    <!-- Host signaling: accept join requests, hand back answers -->
+    <!-- Host signaling: hand out invites, apply the responses -->
     <section id="hostSignalView" class="view card hidden">
-      <h2 class="view__title">Host: connect a participant</h2>
+      <h2 class="view__title">Host: invite participants</h2>
       <ol class="steps">
-        <li>Ask the joiner to send you their <strong>request link</strong> (opening it here fills this in automatically).</li>
-        <li>Paste it below and generate a <strong>response link</strong>.</li>
-        <li>Send the response link back to them. Repeat for each participant.</li>
+        <li>Generate an <strong>invite link</strong> and send it to a participant.</li>
+        <li>Paste the <strong>response link</strong> they send back and connect.</li>
+        <li>Use "+ Add participant" to invite the next person.</li>
       </ol>
+      <button id="hostInviteBtn" class="btn btn--primary">Generate invite link</button>
+      <label class="field hidden" id="hostInviteField">
+        <span class="field__label">Invite link (send this to a participant)</span>
+        <textarea id="hostInviteOutput" class="textarea" rows="3" readonly></textarea>
+        <button id="hostInviteCopyBtn" class="btn btn--ghost">Copy invite link</button>
+      </label>
+      <p class="hint hidden" id="hostHint"></p>
       <label class="field">
-        <span class="field__label">Paste join request (link or code)</span>
-        <textarea id="hostRequestInput" class="textarea" rows="3" placeholder="Paste the joiner's request link or code here"></textarea>
+        <span class="field__label">Paste response (link or code)</span>
+        <textarea id="hostResponseInput" class="textarea" rows="3" placeholder="Paste the participant's response link or code here"></textarea>
       </label>
-      <button id="hostGenerateBtn" class="btn btn--primary">Generate response link</button>
-      <label class="field hidden" id="hostAnswerField">
-        <span class="field__label">Response link (send this back)</span>
-        <textarea id="hostAnswerOutput" class="textarea" rows="3" readonly></textarea>
-        <button id="hostCopyBtn" class="btn btn--ghost">Copy response link</button>
-      </label>
+      <button id="hostConnectBtn" class="btn btn--primary">Connect</button>
       <button id="hostEnterBtn" class="btn btn--link">Open the table &rarr;</button>
     </section>
 
-    <!-- Joiner signaling: create request, paste answer -->
+    <!-- Joiner signaling: accept the invite, hand back a response -->
     <section id="joinSignalView" class="view card hidden">
       <h2 class="view__title">Join: connect to the host</h2>
       <ol class="steps">
-        <li>Generate your <strong>request link</strong> and send it to the host.</li>
-        <li>Paste the <strong>response link</strong> they send back, into this same tab.</li>
+        <li>Paste the <strong>invite link</strong> the host sent you (opening it here fills this in automatically).</li>
+        <li>Generate a <strong>response link</strong> and send it back to the host.</li>
         <li>You're in.</li>
       </ol>
-      <p class="hint hidden" id="joinHint"></p>
-      <button id="joinGenerateBtn" class="btn btn--primary">Generate request link</button>
-      <label class="field hidden" id="joinRequestField">
-        <span class="field__label">Request link (send this to the host)</span>
-        <textarea id="joinRequestOutput" class="textarea" rows="3" readonly></textarea>
-        <button id="joinCopyBtn" class="btn btn--ghost">Copy request link</button>
+      <label class="field">
+        <span class="field__label">Paste invite (link or code)</span>
+        <textarea id="joinInviteInput" class="textarea" rows="3" placeholder="Paste the host's invite link or code here"></textarea>
       </label>
-      <label class="field hidden" id="joinAnswerField">
-        <span class="field__label">Paste response (link or code)</span>
-        <textarea id="joinAnswerInput" class="textarea" rows="3" placeholder="Paste the host's response link or code here"></textarea>
-        <button id="joinConnectBtn" class="btn btn--primary">Connect</button>
+      <button id="joinRespondBtn" class="btn btn--primary">Generate response link</button>
+      <label class="field hidden" id="joinResponseField">
+        <span class="field__label">Response link (send this back to the host)</span>
+        <textarea id="joinResponseOutput" class="textarea" rows="3" readonly></textarea>
+        <button id="joinResponseCopyBtn" class="btn btn--ghost">Copy response link</button>
       </label>
     </section>
 

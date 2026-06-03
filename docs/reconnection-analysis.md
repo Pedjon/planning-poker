@@ -6,7 +6,7 @@ Status: **Options A, C, and D implemented (Phases A, C, D).** Captures the discu
 
 - **A - full mesh + in-band signaling + deterministic election: DONE.** The transport now builds a full mesh ([WebRtcTransport.js](../js/adapters/transport/WebRtcTransport.js)) via a flooded in-band `signal` relay, and the coordinator is elected by seniority (earliest `joinedAt`, id tie-break) in [SessionController.js](../js/application/SessionController.js). Host loss is a silent role swap. Election is by seniority rather than the originally-sketched "lowest id" so the room creator stays host while present.
 - **C - heartbeat + trickle ICE: DONE.** In-band links trickle ICE (offer/answer sent immediately, candidates streamed as `SignalTypes.candidate` and buffered until the remote description is set), so auto-links open in well under a second. A heartbeat (`HEARTBEAT_INTERVAL_MS` / `HEARTBEAT_TIMEOUT_MS` in [iceConfig.js](../js/adapters/transport/iceConfig.js)) pings neighbors and drops a silent link in ~9s, firing `onPeerClose` so the election runs even when `connectionState` never reaches `failed`. The manual first link still bundles ICE (no channel to trickle over yet).
-- **D - shareable links + persistence: DONE (QR skipped).** The first link is shareable as a URL (`#req=`/`#ans=` via [shareLinks.js](../js/ui/shareLinks.js)); inputs accept a link or a bare code. A stable per-tab `selfId` and session-level state (`round`/`revealed`) persist in **sessionStorage** ([persistence.js](../js/infra/persistence.js), wired into [LokiSessionStore.js](../js/adapters/store/LokiSessionStore.js)) so a refresh resumes instead of resetting. Participants are intentionally not persisted - the mesh re-syncs the live roster, so no ghost peers. QR was dropped because a bundled SDP is too large to scan reliably. sessionStorage (not localStorage) keeps ids unique per tab.
+- **D - shareable links + persistence: DONE (QR skipped).** The first link is shareable as a URL (host-initiated `#inv=`/`#res=` via [shareLinks.js](../js/ui/shareLinks.js)); inputs accept a link or a bare code. A stable per-tab `selfId` and session-level state (`round`/`revealed`) persist in **sessionStorage** ([persistence.js](../js/infra/persistence.js), wired into [LokiSessionStore.js](../js/adapters/store/LokiSessionStore.js)) so a refresh resumes instead of resetting. Participants are intentionally not persisted - the mesh re-syncs the live roster, so no ghost peers. QR was dropped because a bundled SDP is too large to scan reliably. sessionStorage (not localStorage) keeps ids unique per tab.
 
 ## Problem
 
@@ -65,7 +65,7 @@ With in-band signaling, all options below cost zero extra copy-paste.
 
 ### D. Graceful manual fallback (when redundancy is exhausted) (IMPLEMENTED)
 - If every channel is gone (everyone refreshed, or the first connection never had a backup), human signaling is unavoidable. Made painless:
-  - Offer/answer are wrapped in a URL (`#req=`/`#ans=`); a request link opens straight into the host flow. QR was skipped (bundled SDP too large to scan). DONE.
+  - Offer/answer are wrapped in a URL (`#inv=`/`#res=`); an invite link opens straight into the join flow. QR was skipped (bundled SDP too large to scan). DONE.
   - A stable per-tab `selfId` and session-level state (round/revealed) persist in sessionStorage, so a refresh resumes the same round. Participants are not persisted (the mesh re-syncs them). DONE.
 
 ## Trade-offs

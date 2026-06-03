@@ -81,10 +81,10 @@ export class SessionController {
     });
   }
 
-  // Manual-signaling facade used by the setup UI (first link only).
-  acceptJoinRequest(code) { return this.net.acceptManualOffer(code); }
-  createJoinRequest() { return this.net.createManualOffer(); }
-  submitAnswer(code) { return Promise.resolve(this.net.acceptManualAnswer(code)); }
+  // Manual-signaling facade (first link only). Host offers; joiner answers.
+  createInvite() { return this.net.createManualOffer(); }           // host -> invite code
+  acceptInvite(code) { return this.net.acceptManualOffer(code); }   // joiner -> response code
+  applyResponse(code) { return Promise.resolve(this.net.acceptManualAnswer(code)); } // host
 
   // ----------------------------- mesh events -----------------------------
   _onPeerOpen(peerId) {
