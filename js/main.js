@@ -46,17 +46,29 @@ function hostGenerateInvite() {
 }
 
 // Host: apply a joiner's response (answer) to finish that connection. Responses
-// can be applied repeatedly and in any order; each matches its invite by nonce.
+// match their invite by nonce, so they can be applied in any order - but each
+// invite is single-use, so a response only connects once.
 function hostConnect() {
   const code = extractCode(els.hostRespIn.value);
   if (!code) return;
   els.hostConnect.disabled = true;
   els.hostConnect.textContent = 'Connecting...';
-  controller.applyResponse(code).then(() => {
-    // Clear and re-arm for the next participant's response.
-    els.hostRespIn.value = '';
+  controller.applyResponse(code).then((result) => {
     els.hostConnect.disabled = false;
     els.hostConnect.textContent = 'Connect';
+    if (!result || !result.applied) {
+      // applyResponse resolves (not rejects) when the response matches no live
+      // invite - e.g. reusing an invite link that a previous participant already
+      // consumed. Surface it instead of failing silently.
+      alert('That response did not match a pending invite.\n\nEach invite link works for exactly one participant. Click "Generate invite link" to create a fresh one for this person, send it to them, then paste the response they return.');
+      return;
+    }
+    // Applied: this invite is now consumed. Clear the shown link so the next
+    // participant gets a fresh one rather than the host reusing a dead invite.
+    els.hostRespIn.value = '';
+    els.hostInviteOut.value = '';
+    els.hostInviteField.classList.add('hidden');
+    els.hostInviteBtn.textContent = 'Generate invite link';
   }).catch((err) => {
     els.hostConnect.disabled = false;
     els.hostConnect.textContent = 'Connect';
