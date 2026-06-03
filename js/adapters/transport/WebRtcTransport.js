@@ -13,10 +13,13 @@
 // gathering). The manual first link can't trickle - there is no channel yet -
 // so it still bundles all candidates via waitForIce.
 //
-// A heartbeat pings every direct neighbor periodically; a link that goes quiet
-// for too long is declared dead and torn down, which fires onPeerClose and lets
-// the controller re-elect a coordinator quickly (even on silent drops that
-// never flip connectionState to 'failed').
+// A keepalive pings every direct neighbor periodically to exercise the link and
+// keep NAT bindings warm. It deliberately does NOT tear a peer down for missed
+// pings: browsers throttle timers in backgrounded/idle tabs, so silence is not a
+// reliable death signal and dropping on it falsely evicts inactive participants.
+// Real departures are detected by WebRTC itself - the data channel's onclose
+// (close/refresh) and connectionState 'failed'/'closed' (genuine failure) - both
+// of which call removeLink and fire onPeerClose.
 //
 // Frame envelope (every byte on a channel is one of these):
 //   { mid, from, to, kind, body }
@@ -25,7 +28,7 @@
 //     to   - target peer id, or null for "everyone" (broadcast)
 //     kind - 'signal'/'app' (signal consumed here, app -> controller) or 'ping'
 //     body - the signal payload or the application message ('ping' has none)
-import { ICE_CONFIG, HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS } from './iceConfig.js';
+import { ICE_CONFIG, HEARTBEAT_INTERVAL_MS } from './iceConfig.js';
 import { encode, decode, waitForIce } from './signaling.js';
 import { diagnose } from './diagnostics.js';
 import { SignalTypes } from '../../domain/messages.js';
@@ -307,24 +310,20 @@ export class WebRtcTransport {
         .then(() => encode({ id: selfId, nonce: env.nonce, desc: pc.localDescription }));
     }
 
-    // ----------------------------- heartbeat -----------------------------
-    // Ping every open neighbor, then drop any open link that has gone silent
-    // past the timeout. Links that have not opened yet are skipped: a manual
-    // link can legitimately sit pending while a human relays the answer code.
-    function heartbeatTick() {
-      const now = Date.now();
+    // ----------------------------- keepalive -----------------------------
+    // Ping every open neighbor to keep the link exercised and NAT bindings warm.
+    // We never drop a peer for missed pings: idle/background tabs throttle timers,
+    // so silence is not death. Departures come from channel.onclose and
+    // connectionState 'failed'/'closed' (see wireChannel / newPc).
+    function keepaliveTick() {
       links.forEach((lk, peerId) => {
         if (lk.channel && lk.channel.readyState === 'open') {
           const frame = { mid: nextMid(selfId), from: selfId, to: peerId, kind: 'ping' };
           try { lk.channel.send(JSON.stringify(frame)); } catch (e) { /* ignore */ }
         }
-        if (lk.open && now - (lk.lastSeen || 0) > HEARTBEAT_TIMEOUT_MS) {
-          warn('HB', 'peer ' + peerId + ' timed out (' + (now - lk.lastSeen) + 'ms) - dropping');
-          removeLink(peerId);
-        }
       });
     }
-    setInterval(heartbeatTick, HEARTBEAT_INTERVAL_MS);
+    setInterval(keepaliveTick, HEARTBEAT_INTERVAL_MS);
 
     // ----------------------------- app messaging -----------------------------
     function broadcast(msg) {
