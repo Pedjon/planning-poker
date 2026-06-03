@@ -36,6 +36,12 @@ function nextMid(selfId) {
   return selfId + ':' + (++MID_SEQ) + ':' + Date.now().toString(36);
 }
 
+// Short opaque id carried by an invite and echoed back by its response, so the
+// host can match a response to the exact pending offer that produced it.
+function nextNonce() {
+  return 'n_' + Math.random().toString(36).slice(2, 10);
+}
+
 // RTCIceCandidate is not plain JSON; keep only the fields addIceCandidate needs.
 function serializeCandidate(c) {
   return {
@@ -57,7 +63,9 @@ export class WebRtcTransport {
     const candBuf = new Map(); // peerId -> [candidate] arrived before remoteDescription
     const seenOrder = [];      // ring buffer of recent mids
     const seen = new Set();
-    let pending = null;        // { pc, channel } for a manual offer awaiting its answer
+    // Each manual offer awaits its answer under a nonce, so the host can hand
+    // out several invites at once and apply the responses in any order.
+    const pendingOffers = new Map(); // nonce -> { pc, channel }
 
     function markSeen(mid) {
       if (seen.has(mid)) return false;
@@ -237,31 +245,37 @@ export class WebRtcTransport {
     // Bundled (non-trickle): there is no channel yet to stream candidates over,
     // so we wait for ICE gathering and embed every candidate in the one code.
     function createManualOffer() {
-      const label = 'MANUAL(offer)';
-      const pc = newPc('pending', label);
+      const nonce = nextNonce();
+      const label = 'MANUAL(offer:' + nonce + ')';
+      const pc = newPc('offer:' + nonce, label);
       const channel = pc.createDataChannel('poker');
-      pending = { pc, channel };
+      pendingOffers.set(nonce, { pc, channel });
       log(label, 'creating offer');
       return pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
         .then(() => waitForIce(pc))
-        .then(() => encode({ id: selfId, desc: pc.localDescription }));
+        .then(() => encode({ id: selfId, nonce, desc: pc.localDescription }));
     }
 
     function acceptManualAnswer(code) {
-      if (!pending) return Promise.resolve({ applied: false });
-      const pc = pending.pc;
-      if (pc.signalingState !== 'have-local-offer') {
-        return Promise.resolve({ applied: false, state: pc.signalingState });
-      }
       const env = decode(code);
       if (!env || !env.desc || env.desc.type !== 'answer') {
         return Promise.reject(new Error('That code is not a response code.'));
       }
+      // Match the response to its invite by nonce; fall back to the sole
+      // outstanding offer so a nonce-less legacy code still connects.
+      let key = env.nonce;
+      if (key == null && pendingOffers.size === 1) key = pendingOffers.keys().next().value;
+      const slot = key != null ? pendingOffers.get(key) : null;
+      if (!slot) return Promise.resolve({ applied: false, reason: 'no matching pending invite' });
+      const pc = slot.pc;
+      if (pc.signalingState !== 'have-local-offer') {
+        return Promise.resolve({ applied: false, state: pc.signalingState });
+      }
       const remoteId = env.id;
-      const channel = pending.channel;
+      const channel = slot.channel;
+      pendingOffers.delete(key);
       links.set(remoteId, { pc, channel, open: false, lastSeen: Date.now() });
-      pending = null;
       pc.onconnectionstatechange = () => {
         if (pc.connectionState === 'failed' || pc.connectionState === 'closed') removeLink(remoteId);
       };
@@ -289,7 +303,8 @@ export class WebRtcTransport {
         .then(() => pc.createAnswer())
         .then((answer) => pc.setLocalDescription(answer))
         .then(() => waitForIce(pc))
-        .then(() => encode({ id: selfId, desc: pc.localDescription }));
+        // Echo the invite's nonce back so the host can match this response.
+        .then(() => encode({ id: selfId, nonce: env.nonce, desc: pc.localDescription }));
     }
 
     // ----------------------------- heartbeat -----------------------------

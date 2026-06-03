@@ -47,14 +47,14 @@ When two peers try to connect to each other, both creating offers at once causes
 
 ## The first handshake (manual, host-initiated)
 
-The host creates the offer (an invite); the joiner answers (a response). A "code" is `{ id, desc }` (the peer's id plus its local description), JSON-stringified and base64-encoded - see `encode`/`decode` in [signaling.js](../js/adapters/transport/signaling.js). Embedding the id lets each side learn who it just connected to. WebRTC offer/answer is symmetric, so the transport primitives (`createManualOffer`/`acceptManualOffer`/`acceptManualAnswer`) are role-agnostic - the host is simply wired to be the offerer. The host invites one participant at a time (serialized): generate an invite, apply the response, then "+ Add participant" for the next.
+The host creates the offer (an invite); the joiner answers (a response). A "code" is `{ id, nonce, desc }` (the peer's id, a per-invite nonce, and its local description), JSON-stringified and base64-encoded - see `encode`/`decode` in [signaling.js](../js/adapters/transport/signaling.js). Embedding the id lets each side learn who it just connected to. WebRTC offer/answer is symmetric, so the transport primitives (`createManualOffer`/`acceptManualOffer`/`acceptManualAnswer`) are role-agnostic - the host is simply wired to be the offerer. The host can hand out several invites at once: each `createManualOffer` mints a fresh nonce and parks its `RTCPeerConnection` in a `pendingOffers` Map keyed by that nonce; the joiner echoes the nonce back in its response, so `acceptManualAnswer` applies each answer to the right connection no matter what order the responses arrive in.
 
 ### Shareable links
 
 To avoid pasting raw codes, each code is also offered as a URL via [shareLinks.js](../js/ui/shareLinks.js): an invite link (`#inv=<code>`, the host's offer) and a response link (`#res=<code>`, the joiner's answer). [main.js](../js/main.js) routes on both initial load and `hashchange`:
 
 - Invite link (`#inv=`): if the tab is not yet in a session, the setup screen is repurposed into a "Join a session" prompt (enter a name, then a single click joins and auto-generates the response link). If the tab is already in a session, the invite is treated as "connect to this person too" - it jumps to the join signaling screen and generates a response link immediately.
-- Response link (`#res=`): the answer can only be applied where the host's pending offer lives - the tab that generated the invite. Navigating that tab to the `#res=` URL changes only the hash, which fires `hashchange` without reloading, so the answer is applied and the connection completes live. Opening the same link in a fresh tab reloads the page and loses the pending `RTCPeerConnection`, so it instead routes to the host signaling screen with a note telling the user to use the original tab (or paste the response into that tab's response field).
+- Response link (`#res=`): the answer can only be applied where the host's pending offers live - the tab that generated the invites (it holds the `pendingOffers` Map; the response's nonce selects the right one). Navigating that tab to the `#res=` URL changes only the hash, which fires `hashchange` without reloading, so the answer is applied and the connection completes live. Opening the same link in a fresh tab reloads the page and loses the pending `RTCPeerConnection`s, so it instead routes to the host signaling screen with a note telling the user to use the original tab (or paste the response into that tab's response field).
 
 Every input also accepts a link or a bare code (`extractCode`), so older raw codes still work. QR is intentionally not generated: a bundled SDP is usually too large to scan reliably.
 
@@ -64,12 +64,12 @@ sequenceDiagram
   participant J as Joiner
   H->>H: createManualOffer() -> createOffer + setLocalDescription
   H->>H: wait for ICE gathering to complete
-  H-->>J: invite code (offer + id)  [copy-paste]
+  H-->>J: invite code (offer + id + nonce)  [copy-paste]
   J->>J: acceptManualOffer(code) -> setRemoteDescription(offer)
   J->>J: createAnswer + setLocalDescription
   J->>J: wait for ICE gathering to complete
-  J-->>H: response code (answer + id)  [copy-paste]
-  H->>H: acceptManualAnswer(code) -> setRemoteDescription(answer)
+  J-->>H: response code (answer + id + nonce)  [copy-paste]
+  H->>H: acceptManualAnswer(code) -> pendingOffers[nonce] -> setRemoteDescription(answer)
   Note over H,J: data channel OPEN -> hello/roster gossip -> auto-mesh
 ```
 

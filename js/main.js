@@ -24,8 +24,9 @@ function requireName() {
   return name;
 }
 
-// Host: create an invite (offer) and show it as a shareable link. This tab now
-// holds the pending offer, so an incoming response link can be applied live here.
+// Host: create an invite (offer) and show it as a shareable link. Each invite
+// carries its own nonce, so the host can mint several and the responses match
+// back independently - the button stays available for the next participant.
 function hostGenerateInvite() {
   els.hostInviteBtn.disabled = true;
   els.hostInviteBtn.textContent = 'Generating...';
@@ -33,8 +34,10 @@ function hostGenerateInvite() {
     els.hostInviteOut.value = buildShareUrl('inv', offer);
     els.hostInviteField.classList.remove('hidden');
     awaitingResponse = true;
-    // Keep disabled: regenerating would invalidate the response the joiner returns.
-    els.hostInviteBtn.textContent = 'Invite link ready';
+    // Re-enable: minting another invite keeps the previous one valid (its pc is
+    // held under its nonce), so the host can invite the next person right away.
+    els.hostInviteBtn.disabled = false;
+    els.hostInviteBtn.textContent = 'Generate another invite link';
   }).catch((err) => {
     els.hostInviteBtn.disabled = false;
     els.hostInviteBtn.textContent = 'Generate invite link';
@@ -42,15 +45,18 @@ function hostGenerateInvite() {
   });
 }
 
-// Host: apply the joiner's response (answer) to finish the connection.
+// Host: apply a joiner's response (answer) to finish that connection. Responses
+// can be applied repeatedly and in any order; each matches its invite by nonce.
 function hostConnect() {
-  if (controller.isConnected()) { ui.goTo('table'); return; }
   const code = extractCode(els.hostRespIn.value);
   if (!code) return;
   els.hostConnect.disabled = true;
   els.hostConnect.textContent = 'Connecting...';
   controller.applyResponse(code).then(() => {
-    els.hostConnect.textContent = 'Connected';
+    // Clear and re-arm for the next participant's response.
+    els.hostRespIn.value = '';
+    els.hostConnect.disabled = false;
+    els.hostConnect.textContent = 'Connect';
   }).catch((err) => {
     els.hostConnect.disabled = false;
     els.hostConnect.textContent = 'Connect';
@@ -168,7 +174,8 @@ els.joinRespond.onclick = joinRespond;
 els.joinRespCopy.onclick = () => ui.copy(els.joinRespOut);
 
 els.addPeer.onclick = () => {
-  // Reset for the next serialized invite.
+  // Clear the display for the next invite. awaitingResponse stays latched: any
+  // invites already handed out remain valid and their responses must still route.
   els.hostInviteOut.value = '';
   els.hostInviteField.classList.add('hidden');
   els.hostHint.classList.add('hidden');
@@ -177,7 +184,6 @@ els.addPeer.onclick = () => {
   els.hostInviteBtn.textContent = 'Generate invite link';
   els.hostConnect.disabled = false;
   els.hostConnect.textContent = 'Connect';
-  awaitingResponse = false;
   ui.goTo('hostSignal');
 };
 els.reveal.onclick = () => controller.revealRound();

@@ -55,7 +55,7 @@ flowchart TB
   - `iceConfig.js` - STUN/TURN servers and the ICE-gathering timeout.
   - `signaling.js` - `encode`/`decode` connection codes and `waitForIce` (non-trickle ICE).
   - `diagnostics.js` - attaches lifecycle logging to a peer connection.
-  - `WebRtcTransport.js` - `init({ selfId, handlers })` returns the mesh API (manual first link, in-band auto-dialing, flooded relay, `broadcast`/`sendTo`) and the data-channel wiring.
+  - `WebRtcTransport.js` - `init({ selfId, handlers })` returns the mesh API (manual first link, in-band auto-dialing, flooded relay, `broadcast`/`sendTo`) and the data-channel wiring. Manual invites are nonce-keyed in a `pendingOffers` Map, so the host can have several outstanding at once and match each response to its connection.
 - [infra/logger.js](../js/infra/logger.js) - a tagged console logger; also exposes `window.PP.setDebug(...)`.
 
 ### UI (driving / primary)
