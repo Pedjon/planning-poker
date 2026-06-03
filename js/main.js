@@ -48,6 +48,9 @@ function joinGenerate() {
     els.joinReqOut.value = buildShareUrl('req', offer);
     els.joinReqField.classList.remove('hidden');
     els.joinAnsField.classList.remove('hidden');
+    // This tab now holds the pending offer, so an incoming answer link can be
+    // applied live here (see routeFromHash).
+    awaitingAnswer = true;
     // Keep disabled: regenerating would invalidate the answer the host returns.
     els.joinGen.textContent = 'Request link ready';
   }).catch((err) => {
@@ -70,18 +73,71 @@ function joinConnect() {
   });
 }
 
-// A request link opened in a fresh tab means "someone wants to join you".
-// The opener becomes the host: once they enter a name and host, we auto-accept
-// the embedded request and produce a response link to send back.
-const incoming = readIncomingHash();
-let pendingReq = incoming && incoming.kind === 'req' ? incoming.code : null;
-if (pendingReq) {
-  els.setupHint.textContent = 'A join request was detected. Enter your name and host to accept it.';
-  // Clear the hash so a reload doesn't replay the stale request.
+// ----------------------------- link routing -----------------------------
+// A request link opened in a fresh tab means "someone wants to join you": the
+// opener becomes the host. An answer link only makes sense in the tab that
+// already created a request (awaitingAnswer), since the pending RTCPeerConnection
+// lives there; opening it fresh just shows guidance.
+let pendingReq = null;
+let awaitingAnswer = false;
+
+function clearHash() {
   if (window.history && window.history.replaceState) {
     window.history.replaceState(null, '', window.location.pathname + window.location.search);
   }
 }
+
+// Repurpose the setup screen as an "accept a join request" prompt: the opener
+// still enters a name, then a single click hosts and auto-generates the response.
+function enterAcceptMode() {
+  els.setupTitle.textContent = 'Accept a join request';
+  els.joinBtn.classList.add('hidden');
+  els.hostBtn.textContent = 'Accept & generate link';
+  els.setupHint.textContent =
+    'Someone wants to join. Enter your name to accept and generate a response link to send back to them.';
+  ui.goTo('setup');
+  els.name.focus();
+}
+
+function routeFromHash(parsed, { live } = {}) {
+  if (!parsed) return;
+  const { kind, code } = parsed;
+
+  if (kind === 'req') {
+    // If already hosting, a request link means "add this participant": jump to
+    // the host signaling screen and produce a response link right away.
+    if (controller.role === 'host' && controller.net) {
+      ui.goTo('hostSignal');
+      els.hostReqIn.value = code;
+      hostGenerate();
+    } else {
+      pendingReq = code;
+      enterAcceptMode();
+    }
+    clearHash();
+    return;
+  }
+
+  if (kind === 'ans') {
+    if (awaitingAnswer) {
+      // Same tab that created the request: apply the answer and connect.
+      els.joinAnsIn.value = code;
+      joinConnect();
+    } else {
+      // Fresh tab (the pending offer was lost on reload): can't connect here.
+      ui.goTo('joinSignal');
+      els.joinAnsIn.value = code;
+      els.joinHint.textContent =
+        'This response belongs to the tab where you created your request. Open it there, ' +
+        'or paste this response into that tab\u2019s response field.';
+      els.joinHint.classList.remove('hidden');
+    }
+    clearHash();
+  }
+}
+
+routeFromHash(readIncomingHash(), { live: false });
+window.addEventListener('hashchange', () => routeFromHash(readIncomingHash(), { live: true }));
 
 // ----------------------------- event wiring -----------------------------
 els.hostBtn.onclick = () => {

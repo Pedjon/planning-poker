@@ -8,6 +8,7 @@ export const els = {
   joinSignal: $('joinSignalView'),
   table: $('tableView'),
   name: $('nameInput'),
+  setupTitle: $('setupTitle'),
   hostBtn: $('hostBtn'),
   joinBtn: $('joinBtn'),
   setupHint: $('setupHint'),
@@ -19,6 +20,7 @@ export const els = {
   hostCopy: $('hostCopyBtn'),
   hostEnter: $('hostEnterBtn'),
   // join signaling
+  joinHint: $('joinHint'),
   joinGen: $('joinGenerateBtn'),
   joinReqField: $('joinRequestField'),
   joinReqOut: $('joinRequestOutput'),

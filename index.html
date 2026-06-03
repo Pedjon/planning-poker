@@ -15,7 +15,7 @@
   <main class="app">
     <!-- Setup: choose name + role -->
     <section id="setupView" class="view card">
-      <h2 class="view__title">Join a session</h2>
+      <h2 class="view__title" id="setupTitle">Join a session</h2>
       <label class="field">
         <span class="field__label">Your name</span>
         <input id="nameInput" class="input" type="text" placeholder="e.g. Pedro" maxlength="24" autocomplete="off" />
@@ -56,6 +56,7 @@
         <li>Paste the <strong>response link</strong> they send back, into this same tab.</li>
         <li>You're in.</li>
       </ol>
+      <p class="hint hidden" id="joinHint"></p>
       <button id="joinGenerateBtn" class="btn btn--primary">Generate request link</button>
       <label class="field hidden" id="joinRequestField">
         <span class="field__label">Request link (send this to the host)</span>

@@ -51,7 +51,12 @@ The joiner creates the offer; the existing member answers. A "code" is `{ id, de
 
 ### Shareable links
 
-To avoid pasting raw codes, each code is also offered as a URL via [shareLinks.js](../js/ui/shareLinks.js): a request link (`#req=<code>`) and a response link (`#ans=<code>`). Opening a request link in a fresh tab routes the opener straight into the host/accept flow (enter a name, host, and the response link is generated automatically). The response cannot be "opened" in a new tab - the joiner's offer lives in the original tab's `RTCPeerConnection` - so it travels back as a link or code the joiner pastes into the tab that is still waiting. Every input accepts a link or a bare code (`extractCode`), so older raw codes still work. QR is intentionally not generated: a bundled SDP is usually too large to scan reliably.
+To avoid pasting raw codes, each code is also offered as a URL via [shareLinks.js](../js/ui/shareLinks.js): a request link (`#req=<code>`) and a response link (`#ans=<code>`). [main.js](../js/main.js) routes on both initial load and `hashchange`:
+
+- Request link (`#req=`): if the tab is not yet in a session, the setup screen is repurposed into an "Accept a join request" prompt (enter a name, then a single click hosts and auto-generates the response link). If the tab is already hosting, the request is treated as "add this participant" - it jumps to the host signaling screen and generates a response link immediately.
+- Response link (`#ans=`): the answer can only be applied where the joiner's pending offer lives - the original waiting tab. Navigating that tab to the `#ans=` URL changes only the hash, which fires `hashchange` without reloading, so the answer is applied and the connection completes live. Opening the same link in a fresh tab reloads the page and loses the pending `RTCPeerConnection`, so it instead routes to the join screen with a note telling the user to use the original tab (or paste the response into that tab's response field).
+
+Every input also accepts a link or a bare code (`extractCode`), so older raw codes still work. QR is intentionally not generated: a bundled SDP is usually too large to scan reliably.
 
 ```mermaid
 sequenceDiagram
