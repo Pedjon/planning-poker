@@ -66,7 +66,9 @@ js/
   application/              SessionController (use-cases, routing, state)
   adapters/
     store/                  LokiSessionStore (StateStore port)
-    transport/              WebRTC: iceConfig, signaling, diagnostics, WebRtcTransport
+    transport/              WebRTC mesh: iceConfig, signaling, diagnostics, frames,
+                            SeenCache, PeerLink, LinkRegistry, MeshRouter,
+                            AutoDialer, ManualSignaling, Keepalive, WebRtcTransport
   ui/                       elements registry + UiAdapter (rendering)
   infra/                    logger
 Dockerfile, docker-compose.yml

@@ -55,7 +55,15 @@ flowchart TB
   - `iceConfig.js` - STUN/TURN servers and the ICE-gathering timeout.
   - `signaling.js` - `encode`/`decode` connection codes and `waitForIce` (non-trickle ICE).
   - `diagnostics.js` - attaches lifecycle logging to a peer connection.
-  - `WebRtcTransport.js` - `init({ selfId, handlers })` returns the mesh API (manual first link, in-band auto-dialing, flooded relay, `broadcast`/`sendTo`) and the data-channel wiring. Manual invites are nonce-keyed in a `pendingOffers` Map, so the host can have several outstanding at once and match each response to its connection.
+  - `frames.js` - the pure wire envelope helpers: `FrameKind`, `nextMid`/`nextNonce`, `serializeCandidate`, and the `appFrame`/`signalFrame`/`pingFrame` builders.
+  - `SeenCache.js` - bounded dedup ring buffer (`markSeen`) that stops flood loops and duplicates.
+  - `PeerLink.js` - one `RTCPeerConnection` + its data channel, with an async API for offer/answer negotiation, ICE candidate buffering, and channel wiring (trickle and non-trickle).
+  - `LinkRegistry.js` - the set of direct links; idempotent `remove` so the two death signals collapse into one `onPeerClose`.
+  - `MeshRouter.js` - flood/relay/consume and the app `broadcast`/`sendTo`.
+  - `AutoDialer.js` - automatic in-band (trickle) link negotiation with the deterministic lower-id-offers rule.
+  - `ManualSignaling.js` - the manual copy-paste first link. Invites are nonce-keyed in a `pendingOffers` Map, so the host can have several outstanding at once and match each response to its connection.
+  - `Keepalive.js` - periodic pings to keep links and NAT bindings warm (never evicts).
+  - `WebRtcTransport.js` - the thin composition root: `init({ selfId, handlers })` wires the modules above and returns the mesh API.
 - [infra/logger.js](../js/infra/logger.js) - a tagged console logger; also exposes `window.PP.setDebug(...)`.
 
 ### UI (driving / primary)
